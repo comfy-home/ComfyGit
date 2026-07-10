@@ -888,6 +888,9 @@ pub(crate) fn run_git_with_cancel(
     args: &[&str],
     cancel: Option<GitCancellation>,
 ) -> Result<GitOutput> {
+    let started = crate::debug::log_git_start(repo_root, args);
+    let timeout = crate::debug::git_default_timeout();
+
     let mut child = Command::new("git")
         .arg("-C")
         .arg(repo_root)
@@ -901,6 +904,7 @@ pub(crate) fn run_git_with_cancel(
         if cancel.as_ref().is_some_and(GitCancellation::is_cancelled) {
             let _ = child.kill();
             let _ = child.wait_with_output();
+            crate::debug::log_git_end(repo_root, args, started, false);
             bail!("git {:?} cancelled in {}", args, repo_root);
         }
 
@@ -911,11 +915,25 @@ pub(crate) fn run_git_with_cancel(
             let output = child
                 .wait_with_output()
                 .with_context(|| format!("failed to collect git output in {}", repo_root))?;
+            let success = status.success();
+            crate::debug::log_git_end(repo_root, args, started, success);
             return Ok(GitOutput {
-                success: status.success(),
+                success,
                 stdout: String::from_utf8_lossy(&output.stdout).to_string(),
                 stderr: String::from_utf8_lossy(&output.stderr).to_string(),
             });
+        }
+
+        if started.elapsed() >= timeout {
+            let _ = child.kill();
+            let _ = child.wait_with_output();
+            crate::debug::log_git_timeout(repo_root, args, timeout.as_secs());
+            bail!(
+                "git {:?} timed out after {}s in {}",
+                args,
+                timeout.as_secs(),
+                repo_root
+            );
         }
 
         std::thread::sleep(Duration::from_millis(100));

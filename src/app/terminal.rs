@@ -111,17 +111,21 @@ pub(crate) fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> 
 
     while !app.should_quit {
         if needs_draw {
+            let draw_start = crate::debug::log_tui_draw_start();
             terminal.draw(|frame| app.draw(frame))?;
+            crate::debug::log_tui_draw_end(draw_start);
             needs_draw = false;
         }
 
         match app.try_finish_background_job() {
             Ok(true) => {
+                crate::debug::log_tui_loop("background job finished, redraw");
                 needs_draw = true;
                 continue;
             }
             Ok(false) => {}
             Err(error) => {
+                crate::debug::log_tui_loop(&format!("background job error: {error}"));
                 app.status = StatusMessage::error(error.to_string());
                 needs_draw = true;
                 continue;
@@ -131,16 +135,26 @@ pub(crate) fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> 
         if event::poll(app.next_poll_timeout()).context("event polling failed")? {
             match event::read().context("event read failed")? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    crate::debug::log_tui_key(&format!("{:?}", key.code), &format!("{:?}", key.modifiers));
                     if let Err(error) = app.handle_key(key) {
+                        crate::debug::log_tui("tui/key", &format!("handle_key error: {error}"));
                         app.status = StatusMessage::error(error.to_string());
                     }
                     needs_draw = true;
                 }
                 Event::Mouse(mouse) => {
+                    let kind_str = format!("{:?}", mouse.kind);
+                    let is_click = kind_str.starts_with("Down") || kind_str.starts_with("Up");
+                    if is_click {
+                        crate::debug::log_tui_mouse(&kind_str, mouse.column, mouse.row);
+                    } else {
+                        crate::debug::log_tui_mouse_deep(&kind_str, mouse.column, mouse.row);
+                    }
                     app.handle_mouse(mouse);
                     needs_draw = true;
                 }
                 Event::Paste(text) => {
+                    crate::debug::log_tui("tui/paste", &format!("{} chars", text.len()));
                     app.handle_paste(text);
                     needs_draw = true;
                 }

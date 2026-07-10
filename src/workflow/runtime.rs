@@ -87,6 +87,7 @@ pub(crate) fn run_command_checked_with_timeout(
     timeout: Duration,
     action: &str,
 ) -> Result<()> {
+    let started = crate::debug::log_cmd_start(program, repo_root, args);
     let mut command = Command::new(program);
     command
         .current_dir(repo_root)
@@ -108,18 +109,21 @@ pub(crate) fn run_command_checked_with_timeout(
                 .wait_with_output()
                 .with_context(|| format!("failed to collect output for {action}"))?;
             if status.success() {
+                crate::debug::log_cmd_end(program, repo_root, args, started, true);
                 return Ok(());
             }
 
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
             let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
             let detail = if stderr.is_empty() { stdout } else { stderr };
+            crate::debug::log_cmd_end(program, repo_root, args, started, false);
             bail!("{action} failed: {detail}");
         }
 
         if started_at.elapsed() >= timeout {
             let _ = child.kill();
             let _ = child.wait_with_output();
+            crate::debug::log_cmd_timeout(program, repo_root, args, timeout.as_secs());
             bail!("{action} timed out after {}s", timeout.as_secs());
         }
 
