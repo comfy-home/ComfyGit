@@ -51,7 +51,11 @@ pub(crate) fn log(category: &str, message: &str) {
     let line = format!("[{timestamp}] {category}: {message}\n");
 
     let path = DEBUG_FILE.get_or_init(|| DEFAULT_LOG_PATH.to_string());
-    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
         let _ = file.write_all(line.as_bytes());
         return;
     }
@@ -62,10 +66,7 @@ pub(crate) fn log(category: &str, message: &str) {
 pub(crate) fn log_git_start(repo_root: &str, args: &[&str]) -> Instant {
     let now = Instant::now();
     if git_debug_enabled() {
-        log(
-            "git",
-            &format!("start {} {:?}", repo_root, args),
-        );
+        log("git", &format!("start {} {:?}", repo_root, args));
     }
     now
 }
@@ -98,15 +99,18 @@ pub(crate) fn log_git_timeout(repo_root: &str, args: &[&str], timeout_secs: u64)
 pub(crate) fn log_cmd_start(program: &str, repo_root: &str, args: &[String]) -> Instant {
     let now = Instant::now();
     if git_debug_enabled() {
-        log(
-            "cmd",
-            &format!("start {program} in {repo_root} {args:?}"),
-        );
+        log("cmd", &format!("start {program} in {repo_root} {args:?}"));
     }
     now
 }
 
-pub(crate) fn log_cmd_end(program: &str, repo_root: &str, args: &[String], started: Instant, success: bool) {
+pub(crate) fn log_cmd_end(
+    program: &str,
+    repo_root: &str,
+    args: &[String],
+    started: Instant,
+    success: bool,
+) {
     if git_debug_enabled() {
         let elapsed = started.elapsed();
         log(
@@ -124,7 +128,10 @@ pub(crate) fn log_cmd_timeout(program: &str, repo_root: &str, args: &[String], t
     if git_debug_enabled() {
         log(
             "cmd",
-            &format!("TIMEOUT {program} in {repo_root} {args:?} after {}s", timeout_secs),
+            &format!(
+                "TIMEOUT {program} in {repo_root} {args:?} after {}s",
+                timeout_secs
+            ),
         );
     }
 }
@@ -163,7 +170,10 @@ pub(crate) fn log_tui_mouse_deep(kind: &str, column: u16, row: u16) {
 
 pub(crate) fn log_tui_scope_select(scope_index: usize, project_name: &str) {
     if tui_debug_enabled() {
-        log("tui/scope", &format!("select scope={scope_index} project='{project_name}'"));
+        log(
+            "tui/scope",
+            &format!("select scope={scope_index} project='{project_name}'"),
+        );
     }
 }
 

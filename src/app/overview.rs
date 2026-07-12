@@ -512,7 +512,10 @@ pub(super) fn move_dashboard_overview_focus(app: &mut App, delta: isize) -> Resu
     crate::debug::log_tui("tui/scope", &format!("move_focus delta={delta}"));
     let project = app.selected_project()?.clone();
     let scopes = collect_bump_scopes(&project)?;
-    crate::debug::log_tui("tui/scope", &format!("collect_bump_scopes returned {} scopes", scopes.len()));
+    crate::debug::log_tui(
+        "tui/scope",
+        &format!("collect_bump_scopes returned {} scopes", scopes.len()),
+    );
     ensure_dashboard_tile_state(app, &scopes);
     if scopes.is_empty() || app.overview_scope_order.is_empty() {
         return Ok(());

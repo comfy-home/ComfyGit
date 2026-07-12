@@ -135,7 +135,10 @@ pub(crate) fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> 
         if event::poll(app.next_poll_timeout()).context("event polling failed")? {
             match event::read().context("event read failed")? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
-                    crate::debug::log_tui_key(&format!("{:?}", key.code), &format!("{:?}", key.modifiers));
+                    crate::debug::log_tui_key(
+                        &format!("{:?}", key.code),
+                        &format!("{:?}", key.modifiers),
+                    );
                     if let Err(error) = app.handle_key(key) {
                         crate::debug::log_tui("tui/key", &format!("handle_key error: {error}"));
                         app.status = StatusMessage::error(error.to_string());
