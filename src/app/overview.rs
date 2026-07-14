@@ -11,8 +11,8 @@ use super::git_flow::{
     refresh_target_artifacts, stage_path_for_file, unstage_paths,
 };
 use super::*;
-use crate::changelog::{archive_changelog_markdown, sum_changelog_gen};
 use crate::app::background::RecentChangesLoadAction;
+use crate::changelog::{archive_changelog_markdown, sum_changelog_gen};
 use crate::{
     git::{
         BranchNameSuggestionRequest, GitCancellation, current_branch_with_cancel,
