@@ -92,9 +92,21 @@ pub(crate) fn ensure_local_branch_published_and_in_sync_with_cancel(
             )
         })?;
 
+    crate::debug::log(
+        "branch-sync-check",
+        &format!("{branch_role} '{branch_name}' upstream='{upstream_ref}'"),
+    );
+
     fetch_remote_for_upstream_with_cancel(repo_root, &upstream_ref, cancel.clone())?;
     let (ahead_count, behind_count) =
         branch_divergence_counts_with_cancel(repo_root, branch_name, &upstream_ref, cancel)?;
+
+    crate::debug::log(
+        "branch-sync-check",
+        &format!(
+            "{branch_role} '{branch_name}' vs '{upstream_ref}': ahead={ahead_count} behind={behind_count}"
+        ),
+    );
 
     match (ahead_count, behind_count) {
         (0, 0) => Ok(upstream_ref),
@@ -280,6 +292,13 @@ pub(crate) fn branch_divergence_counts_with_cancel(
         &["rev-list", "--left-right", "--count", &comparison],
         cancel,
     )?;
+    crate::debug::log(
+        "branch-sync-check",
+        &format!(
+            "rev-list --left-right --count {comparison} => {:?}",
+            output.trim()
+        ),
+    );
     parse_left_right_counts(&output)
 }
 
