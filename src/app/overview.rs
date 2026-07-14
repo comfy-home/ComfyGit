@@ -11,6 +11,7 @@ use super::git_flow::{
     refresh_target_artifacts, stage_path_for_file, unstage_paths,
 };
 use super::*;
+use crate::app::background::RecentChangesLoadAction;
 use crate::changelog::{archive_changelog_markdown, sum_changelog_gen};
 use crate::{
     git::{
@@ -260,7 +261,9 @@ pub(super) fn ensure_dashboard_recent_changes(app: &mut App) {
         app.overview_recent_changes = None;
         app.overview_recent_error = None;
         match RecentChangesDialog::from_project(project) {
-            Ok(dialog) => app.overview_recent_changes = Some(dialog),
+            Ok(dialog) => {
+                app.overview_recent_changes = Some(dialog);
+            }
             Err(error) => app.overview_recent_error = Some(error.to_string()),
         }
     } else {
@@ -509,13 +512,8 @@ pub(super) fn scroll_dashboard_tiles(app: &mut App, delta: isize) -> Result<()> 
 }
 
 pub(super) fn move_dashboard_overview_focus(app: &mut App, delta: isize) -> Result<()> {
-    crate::debug::log_tui("tui/scope", &format!("move_focus delta={delta}"));
     let project = app.selected_project()?.clone();
     let scopes = collect_bump_scopes(&project)?;
-    crate::debug::log_tui(
-        "tui/scope",
-        &format!("collect_bump_scopes returned {} scopes", scopes.len()),
-    );
     ensure_dashboard_tile_state(app, &scopes);
     if scopes.is_empty() || app.overview_scope_order.is_empty() {
         return Ok(());
@@ -806,14 +804,6 @@ pub(super) fn render_dashboard_tiles(
 }
 
 pub(super) fn select_dashboard_overview_scope(app: &mut App, scope_index: usize) -> Result<()> {
-    let project_name = app
-        .config
-        .projects
-        .get(app.selected_project)
-        .map(|p| p.name.as_str())
-        .unwrap_or("?");
-    crate::debug::log_tui_scope_select(scope_index, project_name);
-
     if app.overview_tab == OverviewTab::ProjectSettings {
         let _ = crate::app::project_settings::persist_project_settings_inputs(app);
     }
@@ -823,13 +813,15 @@ pub(super) fn select_dashboard_overview_scope(app: &mut App, scope_index: usize)
     if scope_changed {
         crate::app::project_settings::invalidate_project_settings_state(app);
     }
-    crate::debug::log_tui("tui/scope", "before ensure_dashboard_recent_changes");
     ensure_dashboard_recent_changes(app);
-    crate::debug::log_tui("tui/scope", "after ensure_dashboard_recent_changes");
-    if let Some(dialog) = &mut app.overview_recent_changes {
-        crate::debug::log_tui("tui/scope", "before dialog.select_scope");
-        dialog.select_scope(scope_index)?;
-        crate::debug::log_tui("tui/scope", "after dialog.select_scope");
+    if let Some(dialog) = &app.overview_recent_changes
+        && dialog.selected_scope != scope_index
+        && !app.background_job_active
+    {
+        let _ = app.schedule_overview_recent_changes_action(
+            "Loading git history for the selected scope.",
+            RecentChangesLoadAction::SelectScope(scope_index),
+        );
     }
     Ok(())
 }

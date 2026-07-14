@@ -320,7 +320,7 @@ fn prompt_publish_target_branch(branch_name: &str) -> Result<bool> {
     }
 }
 
-fn render_push_confirmation_menu(_branch_name: &str, selected: usize) -> Result<()> {
+fn render_push_confirmation_menu(branch_name: &str, selected: usize) -> Result<()> {
     let mut stdout = io::stdout();
 
     execute!(stdout, Clear(ClearType::All))
@@ -331,7 +331,10 @@ fn render_push_confirmation_menu(_branch_name: &str, selected: usize) -> Result<
         stdout,
         MoveToColumn(0),
         Print("\r\n"),
-        Print("We can't conclude this branch now because changes have not been pushed yet to remote...\r\n\r\n"),
+        Print(format!(
+            "We can't conclude this branch now because {}{}{} has local changes that haven't been pushed to remote yet...\r\n\r\n",
+            ANSI_CYAN, branch_name, ANSI_RESET
+        )),
         Print(format!(
             "{}Would you like to push them now and continue with the branch merge?{}\r\n\r\n",
             ANSI_CYAN, ANSI_RESET

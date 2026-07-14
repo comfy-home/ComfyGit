@@ -1086,9 +1086,14 @@ impl App {
             BackgroundJobOutput::RecentChanges {
                 dialog,
                 status_message,
+                is_overview,
             } => {
-                self.recent_changes_dialog = Some(dialog);
-                let _ = self.schedule_recent_changes_prefetch();
+                if is_overview {
+                    self.overview_recent_changes = Some(dialog);
+                } else {
+                    self.recent_changes_dialog = Some(dialog);
+                    let _ = self.schedule_recent_changes_prefetch();
+                }
                 if let Some(message) = status_message {
                     self.status = StatusMessage::info(message);
                 }
@@ -1210,7 +1215,32 @@ impl App {
         self.schedule_progress_job(
             " Loading Git Commits ",
             message,
-            BackgroundJobRequest::RecentChanges { dialog, action },
+            BackgroundJobRequest::RecentChanges {
+                dialog,
+                action,
+                is_overview: false,
+            },
+        )
+    }
+
+    pub(crate) fn schedule_overview_recent_changes_action(
+        &mut self,
+        message: impl Into<String>,
+        action: RecentChangesLoadAction,
+    ) -> Result<()> {
+        let dialog = self
+            .overview_recent_changes
+            .clone()
+            .ok_or_else(|| anyhow!("overview recent changes is not open"))?;
+
+        self.schedule_progress_job(
+            " Loading Git Commits ",
+            message,
+            BackgroundJobRequest::RecentChanges {
+                dialog,
+                action,
+                is_overview: true,
+            },
         )
     }
 
