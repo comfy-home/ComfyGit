@@ -915,7 +915,9 @@ pub(crate) fn comfygitflow_resolve_parent_branch(
     existing_branches: &[String],
     custom_main_branch: Option<&str>,
 ) -> Option<String> {
-    if let Some(parent) = crate::git::deviation_merge_parent_branch(current_branch, existing_branches) {
+    if let Some(parent) =
+        crate::git::deviation_merge_parent_branch(current_branch, existing_branches)
+    {
         return Some(parent);
     }
 
@@ -2096,14 +2098,8 @@ mod tests {
 
     #[test]
     fn comfygitflow_root_distance_nested_cross_type() {
-        assert_eq!(
-            comfygitflow_root_distance("v0.37.2-dev-SUB1-alt1"),
-            Some(4)
-        );
-        assert_eq!(
-            comfygitflow_root_distance("v0.37.2-dev-alt1-SUB1"),
-            Some(4)
-        );
+        assert_eq!(comfygitflow_root_distance("v0.37.2-dev-SUB1-alt1"), Some(4));
+        assert_eq!(comfygitflow_root_distance("v0.37.2-dev-alt1-SUB1"), Some(4));
         assert_eq!(
             comfygitflow_root_distance("v0.37.2-dev-SUB1-alt1-SUB1"),
             Some(5)
