@@ -348,7 +348,7 @@ fn parse_numeric_alt_dev_parent(base: &str) -> Option<String> {
     Some(dev_parent.to_string())
 }
 
-fn parse_letter_alt_base(base: &str) -> Option<(String, char)> {
+pub(crate) fn parse_letter_alt_base(base: &str) -> Option<(String, char)> {
     let alt_index = base.rfind("-alt")?;
     let dev_parent = base[..alt_index].trim();
     if !dev_parent.contains("-dev") {
