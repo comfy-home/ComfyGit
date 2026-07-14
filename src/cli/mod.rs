@@ -979,6 +979,7 @@ fn print_branch_status() -> Result<()> {
             &context.repo_root,
             &context.current_branch,
             context.main_branch_name.as_deref(),
+            context.comfygitflow_enabled,
             cancel,
         )
     })?;
@@ -2885,13 +2886,14 @@ fn load_branch_diagram(
     current_branch: &str,
     custom_main_branch: Option<&str>,
 ) -> Result<Option<BranchDiagram>> {
-    load_branch_diagram_with_cancel(repo_root, current_branch, custom_main_branch, None)
+    load_branch_diagram_with_cancel(repo_root, current_branch, custom_main_branch, false, None)
 }
 
 fn load_branch_diagram_with_cancel(
     repo_root: &str,
     current_branch: &str,
     custom_main_branch: Option<&str>,
+    comfygitflow_enabled: bool,
     cancel: Option<GitCancellation>,
 ) -> Result<Option<BranchDiagram>> {
     let Some(tree) = build_branch_tree_data_with_cancel(
@@ -2899,6 +2901,7 @@ fn load_branch_diagram_with_cancel(
         current_branch,
         custom_main_branch,
         true,
+        comfygitflow_enabled,
         cancel.clone(),
     )?
     else {
@@ -2982,6 +2985,7 @@ fn load_branch_lineage_with_cancel(
     repo_root: &str,
     current_branch: &str,
     custom_main_branch: Option<&str>,
+    comfygitflow_enabled: bool,
     cancel: Option<GitCancellation>,
 ) -> Result<Option<BranchLineage>> {
     let Some(tree) = build_branch_tree_data_with_cancel(
@@ -2989,6 +2993,7 @@ fn load_branch_lineage_with_cancel(
         current_branch,
         custom_main_branch,
         false,
+        comfygitflow_enabled,
         cancel,
     )?
     else {
@@ -3006,6 +3011,7 @@ fn build_branch_tree_data_with_cancel(
     current_branch: &str,
     custom_main_branch: Option<&str>,
     focus_descendant_from_root: bool,
+    comfygitflow_enabled: bool,
     cancel: Option<GitCancellation>,
 ) -> Result<Option<BranchTreeData>> {
     let mut branches = list_local_branch_refs_with_cancel(repo_root, cancel.clone())?;
@@ -3015,12 +3021,21 @@ fn build_branch_tree_data_with_cancel(
 
     let root_index = select_root_branch_index(&branches, current_branch, custom_main_branch);
     let root_branch = branches.remove(root_index);
-    populate_root_distances_with_cancel(
-        repo_root,
-        &root_branch.refname,
-        &mut branches,
-        cancel.clone(),
-    )?;
+    if comfygitflow_enabled {
+        populate_root_distances_from_naming(
+            repo_root,
+            &root_branch.refname,
+            &mut branches,
+            cancel.clone(),
+        )?;
+    } else {
+        populate_root_distances_with_cancel(
+            repo_root,
+            &root_branch.refname,
+            &mut branches,
+            cancel.clone(),
+        )?;
+    }
 
     let current_ref = if root_branch.name.eq_ignore_ascii_case(current_branch) {
         if focus_descendant_from_root {
@@ -3155,6 +3170,37 @@ fn populate_root_distances_with_cancel(
     Ok(())
 }
 
+fn populate_root_distances_from_naming(
+    repo_root: &str,
+    root_ref: &str,
+    branches: &mut [BranchRef],
+    cancel: Option<GitCancellation>,
+) -> Result<()> {
+    let mut fallback_indices = Vec::new();
+    for (i, branch) in branches.iter_mut().enumerate() {
+        if let Some(distance) = crate::git::comfygitflow_root_distance(&branch.name) {
+            branch.root_distance = distance;
+        } else {
+            fallback_indices.push(i);
+        }
+    }
+
+    for i in fallback_indices {
+        let range = format!("{}..{}", root_ref, branches[i].refname);
+        let output = run_git_checked_owned_with_cancel(
+            repo_root,
+            vec!["rev-list".to_string(), "--count".to_string(), range.clone()],
+            cancel.clone(),
+        )?;
+        branches[i].root_distance = output
+            .trim()
+            .parse::<usize>()
+            .with_context(|| format!("failed to parse git ancestry distance for {}", range))?;
+    }
+
+    Ok(())
+}
+
 fn sort_branch_path(path: &mut [BranchRef], current_branch: &str) {
     path.sort_by(|left, right| {
         let left_is_current = left.name.eq_ignore_ascii_case(current_branch);
@@ -3209,9 +3255,14 @@ fn resolve_parent_branch_name_with_cancel(
         return Ok(parent_branch);
     }
 
-    let lineage =
-        load_branch_lineage_with_cancel(repo_root, current_branch, custom_main_branch, cancel)?
-            .ok_or_else(|| anyhow!("no local branches are available in this repository"))?;
+    let lineage = load_branch_lineage_with_cancel(
+        repo_root,
+        current_branch,
+        custom_main_branch,
+        comfygitflow_enabled,
+        cancel,
+    )?
+    .ok_or_else(|| anyhow!("no local branches are available in this repository"))?;
     if lineage.root.name.eq_ignore_ascii_case(current_branch) {
         bail!("current branch is already the main branch")
     }
