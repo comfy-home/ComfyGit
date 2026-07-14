@@ -915,7 +915,7 @@ pub(crate) fn comfygitflow_resolve_parent_branch(
     existing_branches: &[String],
     custom_main_branch: Option<&str>,
 ) -> Option<String> {
-    if let Some(parent) = crate::git::alt_merge_parent_branch(current_branch, existing_branches) {
+    if let Some(parent) = crate::git::deviation_merge_parent_branch(current_branch, existing_branches) {
         return Some(parent);
     }
 
@@ -1012,7 +1012,7 @@ fn resolve_parent_branch_name_with_cancel(
     }
 
     if let Some(parent_branch) =
-        crate::git::alt_merge_parent_branch(current_branch, &existing_branches)
+        crate::git::deviation_merge_parent_branch(current_branch, &existing_branches)
     {
         return Ok(parent_branch);
     }
@@ -1262,11 +1262,26 @@ pub(crate) fn comfygitflow_root_distance(branch_name: &str) -> Option<usize> {
     if is_comfygit_dev_source_branch(trimmed) {
         return Some(2);
     }
-    if crate::git::is_alt_branch(trimmed) {
-        if crate::git::parse_letter_alt_base(base).is_some() {
-            return Some(4);
+    if crate::git::is_deviation_branch(trimmed) {
+        let mut distance = 2usize;
+        let mut remaining = base;
+        while let Some((pos, marker)) = crate::git::find_rightmost_marker(remaining) {
+            let suffix = &remaining[pos + marker.len()..];
+            let digit_len = suffix.chars().take_while(|ch| ch.is_ascii_digit()).count();
+            if digit_len == 0 {
+                break;
+            }
+            let rest = &suffix[digit_len..];
+            if !rest.is_empty() && !rest.chars().all(|ch| ch.is_ascii_uppercase()) {
+                break;
+            }
+            distance += 1;
+            if !rest.is_empty() {
+                distance += 1;
+            }
+            remaining = &remaining[..pos];
         }
-        return Some(3);
+        return Some(distance);
     }
     None
 }
@@ -2058,6 +2073,44 @@ mod tests {
         assert_eq!(
             comfygitflow_root_distance("v0.37.2-dev-alt2A--suffix"),
             Some(4)
+        );
+    }
+
+    #[test]
+    fn comfygitflow_root_distance_numeric_sub() {
+        assert_eq!(comfygitflow_root_distance("v0.37.2-dev-SUB1"), Some(3));
+        assert_eq!(
+            comfygitflow_root_distance("v0.37.2-dev-SUB1--suffix"),
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn comfygitflow_root_distance_letter_sub() {
+        assert_eq!(comfygitflow_root_distance("v0.37.2-dev-SUB2A"), Some(4));
+        assert_eq!(
+            comfygitflow_root_distance("v0.37.2-dev-SUB2A--suffix"),
+            Some(4)
+        );
+    }
+
+    #[test]
+    fn comfygitflow_root_distance_nested_cross_type() {
+        assert_eq!(
+            comfygitflow_root_distance("v0.37.2-dev-SUB1-alt1"),
+            Some(4)
+        );
+        assert_eq!(
+            comfygitflow_root_distance("v0.37.2-dev-alt1-SUB1"),
+            Some(4)
+        );
+        assert_eq!(
+            comfygitflow_root_distance("v0.37.2-dev-SUB1-alt1-SUB1"),
+            Some(5)
+        );
+        assert_eq!(
+            comfygitflow_root_distance("v0.37.2-dev-SUB1-alt1A"),
+            Some(5)
         );
     }
 
