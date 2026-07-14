@@ -45,9 +45,18 @@ pub(crate) fn run_pr(
     forge: ForgeKind,
     force_main: bool,
     custom_main_branch: Option<&str>,
+    comfygitflow_enabled: bool,
     cancel: Option<GitCancellation>,
 ) -> Result<()> {
-    run_pr_and_capture(repo_root, forge, force_main, custom_main_branch, cancel).map(|_| ())
+    run_pr_and_capture(
+        repo_root,
+        forge,
+        force_main,
+        custom_main_branch,
+        comfygitflow_enabled,
+        cancel,
+    )
+    .map(|_| ())
 }
 
 pub(crate) fn run_pr_and_capture(
@@ -55,6 +64,7 @@ pub(crate) fn run_pr_and_capture(
     forge: ForgeKind,
     force_main: bool,
     custom_main_branch: Option<&str>,
+    comfygitflow_enabled: bool,
     cancel: Option<GitCancellation>,
 ) -> Result<CreatedPullRequest> {
     let current_branch = current_branch_with_cancel(repo_root, cancel.clone())?;
@@ -69,6 +79,7 @@ pub(crate) fn run_pr_and_capture(
             repo_root,
             &current_branch,
             custom_main_branch,
+            comfygitflow_enabled,
             cancel.clone(),
         )?
     };
@@ -899,16 +910,107 @@ struct BranchLineage {
     path: Vec<BranchRef>,
 }
 
+pub(crate) fn comfygitflow_resolve_parent_branch(
+    current_branch: &str,
+    existing_branches: &[String],
+    custom_main_branch: Option<&str>,
+) -> Option<String> {
+    if let Some(parent) = crate::git::alt_merge_parent_branch(current_branch, existing_branches) {
+        return Some(parent);
+    }
+
+    if is_comfygit_dev_source_branch(current_branch) {
+        let release_line_base =
+            crate::git::semver_release_line_branch_from_dev_branch(current_branch)?;
+        return find_matching_release_line_branch(
+            &release_line_base,
+            current_branch,
+            existing_branches,
+        );
+    }
+
+    if is_release_line_branch_name(current_branch) {
+        return Some(resolve_main_branch_name_from_options(custom_main_branch));
+    }
+
+    None
+}
+
+fn find_matching_release_line_branch(
+    release_line_base: &str,
+    current_branch: &str,
+    existing_branches: &[String],
+) -> Option<String> {
+    let base_lookup = normalize_lookup(release_line_base);
+    let current_suffix = current_branch
+        .split_once("--")
+        .map(|(_, suffix)| suffix.trim());
+
+    let mut exact: Option<&String> = None;
+    let mut suffix_match: Option<&String> = None;
+    let mut first_suffixed: Option<&String> = None;
+
+    for branch in existing_branches {
+        let branch_lookup = normalize_lookup(branch);
+        if branch_lookup == base_lookup {
+            exact = Some(branch);
+            continue;
+        }
+        if let Some((branch_base, branch_suffix)) = branch.split_once("--")
+            && normalize_lookup(branch_base.trim()) == base_lookup
+        {
+            if let Some(suffix) = current_suffix
+                && suffix.eq_ignore_ascii_case(branch_suffix.trim())
+            {
+                suffix_match = Some(branch);
+            }
+            if first_suffixed.is_none() {
+                first_suffixed = Some(branch);
+            }
+        }
+    }
+
+    suffix_match.or(exact).or(first_suffixed).cloned()
+}
+
+fn is_release_line_branch_name(branch: &str) -> bool {
+    let normalized = branch.trim().trim_start_matches('v');
+    let base = normalized
+        .split_once("--")
+        .map(|(base, _)| base)
+        .unwrap_or(normalized);
+    base.ends_with(".x")
+}
+
+fn resolve_main_branch_name_from_options(custom_main_branch: Option<&str>) -> String {
+    if let Some(custom) = custom_main_branch.map(str::trim).filter(|s| !s.is_empty()) {
+        return custom.to_string();
+    }
+    "main".to_string()
+}
+
 fn resolve_parent_branch_name_with_cancel(
     repo_root: &str,
     current_branch: &str,
     custom_main_branch: Option<&str>,
+    comfygitflow_enabled: bool,
     cancel: Option<GitCancellation>,
 ) -> Result<String> {
     let existing_branches = list_local_branch_refs_with_cancel(repo_root, cancel.clone())?
         .into_iter()
         .map(|branch| branch.name)
         .collect::<Vec<_>>();
+
+    if comfygitflow_enabled
+        && let Some(parent) = comfygitflow_resolve_parent_branch(
+            current_branch,
+            &existing_branches,
+            custom_main_branch,
+        )
+    {
+        return Ok(parent);
+    }
+
     if let Some(parent_branch) =
         crate::git::alt_merge_parent_branch(current_branch, &existing_branches)
     {
@@ -1757,6 +1859,104 @@ mod tests {
         assert_eq!(
             editor.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
             EditorAction::Terminate
+        );
+    }
+
+    #[test]
+    fn comfygitflow_dev_branch_resolves_to_exact_release_line() {
+        let existing = vec!["0.37.x".to_string(), "main".to_string()];
+        assert_eq!(
+            comfygitflow_resolve_parent_branch("v0.37.2-dev", &existing, None).as_deref(),
+            Some("0.37.x")
+        );
+    }
+
+    #[test]
+    fn comfygitflow_dev_branch_with_suffix_prefers_matching_suffixed_release_line() {
+        let existing = vec![
+            "0.37.x".to_string(),
+            "0.37.x--specific".to_string(),
+            "main".to_string(),
+        ];
+        assert_eq!(
+            comfygitflow_resolve_parent_branch("v0.37.2-dev--specific", &existing, None).as_deref(),
+            Some("0.37.x--specific")
+        );
+    }
+
+    #[test]
+    fn comfygitflow_dev_branch_without_suffix_uses_exact_release_line() {
+        let existing = vec![
+            "0.37.x".to_string(),
+            "0.37.x--specific".to_string(),
+            "main".to_string(),
+        ];
+        assert_eq!(
+            comfygitflow_resolve_parent_branch("v0.37.2-dev", &existing, None).as_deref(),
+            Some("0.37.x")
+        );
+    }
+
+    #[test]
+    fn comfygitflow_dev_branch_falls_back_to_first_suffixed_when_no_exact_match() {
+        let existing = vec!["0.37.x--specific".to_string(), "main".to_string()];
+        assert_eq!(
+            comfygitflow_resolve_parent_branch("v0.37.2-dev", &existing, None).as_deref(),
+            Some("0.37.x--specific")
+        );
+    }
+
+    #[test]
+    fn comfygitflow_dev_branch_returns_none_when_no_release_line_exists() {
+        let existing = vec!["main".to_string()];
+        assert_eq!(
+            comfygitflow_resolve_parent_branch("v0.37.2-dev", &existing, None),
+            None
+        );
+    }
+
+    #[test]
+    fn comfygitflow_alt_branch_delegates_to_alt_merge_parent() {
+        let existing = vec!["v0.1.5-dev".to_string(), "0.1.x".to_string()];
+        assert_eq!(
+            comfygitflow_resolve_parent_branch("v0.1.5-dev-alt2", &existing, None).as_deref(),
+            Some("v0.1.5-dev")
+        );
+    }
+
+    #[test]
+    fn comfygitflow_release_line_branch_resolves_to_main() {
+        let existing = vec!["0.37.x".to_string(), "main".to_string()];
+        assert_eq!(
+            comfygitflow_resolve_parent_branch("0.37.x", &existing, None).as_deref(),
+            Some("main")
+        );
+    }
+
+    #[test]
+    fn comfygitflow_release_line_branch_with_suffix_resolves_to_main() {
+        let existing = vec!["0.37.x--specific".to_string(), "main".to_string()];
+        assert_eq!(
+            comfygitflow_resolve_parent_branch("0.37.x--specific", &existing, None).as_deref(),
+            Some("main")
+        );
+    }
+
+    #[test]
+    fn comfygitflow_release_line_branch_resolves_to_custom_main() {
+        let existing = vec!["0.37.x".to_string(), "trunk".to_string()];
+        assert_eq!(
+            comfygitflow_resolve_parent_branch("0.37.x", &existing, Some("trunk")).as_deref(),
+            Some("trunk")
+        );
+    }
+
+    #[test]
+    fn comfygitflow_main_branch_returns_none() {
+        let existing = vec!["main".to_string(), "0.37.x".to_string()];
+        assert_eq!(
+            comfygitflow_resolve_parent_branch("main", &existing, None),
+            None
         );
     }
 }

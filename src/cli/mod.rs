@@ -244,12 +244,14 @@ fn dispatch_args(args: &[String]) -> Result<StartupMode> {
             let repo_root = current_git_repo_root(&cwd)?;
             let forge = crate::forge::require_forge_for_repo(&repo_root)?;
             let custom_main_branch = find_repo_custom_main_branch(&repo_root);
+            let comfygitflow_enabled = find_repo_comfygitflow_enabled(&repo_root);
             with_cli_git_cancellation(|cancel| {
                 run_pr(
                     &repo_root,
                     forge,
                     false,
                     custom_main_branch.as_deref(),
+                    comfygitflow_enabled,
                     cancel,
                 )
             })?;
@@ -260,12 +262,14 @@ fn dispatch_args(args: &[String]) -> Result<StartupMode> {
             let repo_root = current_git_repo_root(&cwd)?;
             let forge = crate::forge::require_forge_for_repo(&repo_root)?;
             let custom_main_branch = find_repo_custom_main_branch(&repo_root);
+            let comfygitflow_enabled = find_repo_comfygitflow_enabled(&repo_root);
             with_cli_git_cancellation(|cancel| {
                 run_pr(
                     &repo_root,
                     forge,
                     true,
                     custom_main_branch.as_deref(),
+                    comfygitflow_enabled,
                     cancel,
                 )
             })?;
@@ -991,6 +995,7 @@ fn run_branch_up() -> Result<()> {
             &context.repo_root,
             &context.current_branch,
             context.main_branch_name.as_deref(),
+            context.comfygitflow_enabled,
             cancel,
         )
     })?;
@@ -1031,6 +1036,7 @@ fn run_branch_done_command() -> Result<()> {
         run_branch_done(
             &context.repo_root,
             context.main_branch_name.as_deref(),
+            context.comfygitflow_enabled,
             cancel,
         )
     })
@@ -1052,6 +1058,7 @@ struct ActiveBranchCliContext {
     project_name: String,
     repo_root: String,
     main_branch_name: Option<String>,
+    comfygitflow_enabled: bool,
     current_branch: String,
 }
 
@@ -1078,6 +1085,7 @@ fn load_active_branch_cli_context() -> Result<ActiveBranchCliContext> {
         project_name: project.name.clone(),
         repo_root: context.repo_root.clone(),
         main_branch_name: context.main_branch_name.clone(),
+        comfygitflow_enabled: project.comfygitflow_enabled,
         current_branch,
     })
 }
@@ -3164,19 +3172,37 @@ fn resolve_parent_branch_name(
     current_branch: &str,
     custom_main_branch: Option<&str>,
 ) -> Result<String> {
-    resolve_parent_branch_name_with_cancel(repo_root, current_branch, custom_main_branch, None)
+    resolve_parent_branch_name_with_cancel(
+        repo_root,
+        current_branch,
+        custom_main_branch,
+        false,
+        None,
+    )
 }
 
 fn resolve_parent_branch_name_with_cancel(
     repo_root: &str,
     current_branch: &str,
     custom_main_branch: Option<&str>,
+    comfygitflow_enabled: bool,
     cancel: Option<GitCancellation>,
 ) -> Result<String> {
     let existing_branches = list_local_branch_refs_with_cancel(repo_root, cancel.clone())?
         .into_iter()
         .map(|branch| branch.name)
         .collect::<Vec<_>>();
+
+    if comfygitflow_enabled
+        && let Some(parent) = crate::git::comfygitflow_resolve_parent_branch(
+            current_branch,
+            &existing_branches,
+            custom_main_branch,
+        )
+    {
+        return Ok(parent);
+    }
+
     if let Some(parent_branch) =
         crate::git::alt_merge_parent_branch(current_branch, &existing_branches)
     {
@@ -3503,6 +3529,33 @@ fn find_repo_custom_main_branch(repo_root: &str) -> Option<String> {
     }
 
     None
+}
+
+fn find_repo_comfygitflow_enabled(repo_root: &str) -> bool {
+    let canonical_repo_root = best_effort_canonicalize(Path::new(repo_root));
+    let config = load_config().ok();
+
+    let Some(config) = config else {
+        return false;
+    };
+
+    for project in &config.projects {
+        if let Some(repo) = project.repo.as_ref()
+            && best_effort_canonicalize(&repo_root_path(repo)) == canonical_repo_root
+        {
+            return project.comfygitflow_enabled;
+        }
+
+        for branch in &project.branches {
+            if let Some(repo) = branch.repo.as_ref()
+                && best_effort_canonicalize(&repo_root_path(repo)) == canonical_repo_root
+            {
+                return project.comfygitflow_enabled;
+            }
+        }
+    }
+
+    false
 }
 
 pub(crate) fn mirror_sync_after_merge_for_repo(

@@ -29,11 +29,19 @@ const ANSI_RESET: &str = "\x1b[0m";
 pub(crate) fn run_branch_done(
     repo_root: &str,
     custom_main_branch: Option<&str>,
+    comfygitflow_enabled: bool,
     cancel: Option<GitCancellation>,
 ) -> Result<()> {
     let forge = forge::require_forge_for_repo(repo_root)?;
     let created_pr = loop {
-        match run_pr_and_capture(repo_root, forge, false, custom_main_branch, cancel.clone()) {
+        match run_pr_and_capture(
+            repo_root,
+            forge,
+            false,
+            custom_main_branch,
+            comfygitflow_enabled,
+            cancel.clone(),
+        ) {
             Ok(created_pr) => break created_pr,
             Err(error) => {
                 // Check for uncommitted changes error first
