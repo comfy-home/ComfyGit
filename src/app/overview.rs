@@ -816,11 +816,12 @@ pub(super) fn select_dashboard_overview_scope(app: &mut App, scope_index: usize)
     ensure_dashboard_recent_changes(app);
     if let Some(dialog) = &app.overview_recent_changes
         && dialog.selected_scope != scope_index
+        && !app.background_job_active
     {
-        app.schedule_overview_recent_changes_action(
+        let _ = app.schedule_overview_recent_changes_action(
             "Loading git history for the selected scope.",
             RecentChangesLoadAction::SelectScope(scope_index),
-        )?;
+        );
     }
     Ok(())
 }
