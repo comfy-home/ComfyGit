@@ -243,8 +243,7 @@ enum BranchAction {
 const MAIN_OPTIONS: [(&str, &str); 3] =
     [("patch", "Patch"), ("minor", "Minor"), ("major", "Major")];
 
-const NON_MAIN_OPTIONS: [(&str, &str); 3] =
-    [("patch", "Patch"), ("alt", "alt"), ("sub", "SUB")];
+const NON_MAIN_OPTIONS: [(&str, &str); 3] = [("patch", "Patch"), ("alt", "alt"), ("sub", "SUB")];
 
 fn branch_action_options(is_on_main: bool) -> &'static [(&'static str, &'static str)] {
     if is_on_main {
@@ -363,7 +362,9 @@ fn render_branch_action_picker(
     // trailing blank
     queue!(stdout, MoveToColumn(0), Print("\r\n")).context("render action: trailing blank")?;
 
-    stdout.flush().context("failed to flush branch action picker")?;
+    stdout
+        .flush()
+        .context("failed to flush branch action picker")?;
 
     // Line count: 1 blank + 1 question + 1 blank + N options + 1 trailing blank
     *rendered_lines = 4 + options.len();
