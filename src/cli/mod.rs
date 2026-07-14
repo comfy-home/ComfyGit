@@ -392,6 +392,14 @@ fn dispatch_args(args: &[String]) -> Result<StartupMode> {
             crate::git::run_new_alt(Some(option))?;
             Ok(StartupMode::Handled)
         }
+        [command, action] if is_new_command(command) && action == "sub" => {
+            crate::git::run_new_sub(None)?;
+            Ok(StartupMode::Handled)
+        }
+        [command, action, option] if is_new_command(command) && action == "sub" => {
+            crate::git::run_new_sub(Some(option))?;
+            Ok(StartupMode::Handled)
+        }
         [command, action] if is_new_command(command) => {
             crate::git::run_new(Some(action), None)?;
             Ok(StartupMode::Handled)
@@ -2953,7 +2961,7 @@ fn load_branch_diagram_with_cancel(
             continue;
         }
 
-        if crate::git::is_alt_branch(current_branch)
+        if crate::git::is_deviation_branch(current_branch)
             && let Some(segment) = path
                 .iter()
                 .position(|segment| segment.branch.name.eq_ignore_ascii_case(current_branch))
@@ -3069,7 +3077,7 @@ fn build_branch_tree_data_with_cancel(
         .chain(std::iter::once(current_ref.name.clone()))
         .collect::<Vec<_>>();
     let alt_sibling_lookups =
-        crate::git::alt_sibling_branch_names(current_branch, &all_branch_names)
+        crate::git::deviation_sibling_branch_names(current_branch, &all_branch_names)
             .into_iter()
             .map(|branch| normalize_lookup(&branch))
             .collect::<std::collections::HashSet<_>>();
@@ -3097,9 +3105,9 @@ fn build_branch_tree_data_with_cancel(
         path.push(current_ref);
     }
 
-    if crate::git::is_alt_branch(current_branch)
+    if crate::git::is_deviation_branch(current_branch)
         && let Some(parent_name) =
-            crate::git::alt_merge_parent_branch(current_branch, &all_branch_names)
+            crate::git::deviation_merge_parent_branch(current_branch, &all_branch_names)
         && !root_branch.name.eq_ignore_ascii_case(&parent_name)
         && path
             .iter()
@@ -3250,7 +3258,7 @@ fn resolve_parent_branch_name_with_cancel(
     }
 
     if let Some(parent_branch) =
-        crate::git::alt_merge_parent_branch(current_branch, &existing_branches)
+        crate::git::deviation_merge_parent_branch(current_branch, &existing_branches)
     {
         return Ok(parent_branch);
     }
