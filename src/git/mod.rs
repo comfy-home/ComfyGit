@@ -294,7 +294,10 @@ pub(crate) fn branch_divergence_counts_with_cancel(
     )?;
     crate::debug::log(
         "branch-sync-check",
-        &format!("rev-list --left-right --count {comparison} => {:?}", output.trim()),
+        &format!(
+            "rev-list --left-right --count {comparison} => {:?}",
+            output.trim()
+        ),
     );
     parse_left_right_counts(&output)
 }
