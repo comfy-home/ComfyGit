@@ -168,15 +168,6 @@ pub(crate) fn log_tui_mouse_deep(kind: &str, column: u16, row: u16) {
     }
 }
 
-pub(crate) fn log_tui_scope_select(scope_index: usize, project_name: &str) {
-    if tui_debug_enabled() {
-        log(
-            "tui/scope",
-            &format!("select scope={scope_index} project='{project_name}'"),
-        );
-    }
-}
-
 pub(crate) fn log_tui_draw_start() -> Instant {
     let now = Instant::now();
     if deep_debug_enabled() {
