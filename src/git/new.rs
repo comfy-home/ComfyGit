@@ -33,7 +33,7 @@ use crossterm::{
 use crate::{
     cli::{best_effort_canonicalize, current_git_repo_root, find_project_for_cwd, run_bump},
     config::ConfigStore,
-    git::current_branch_with_cancel,
+    git::{current_branch_with_cancel, is_mainline_branch_name},
 };
 
 // ---------------------------------------------------------------------------
@@ -64,9 +64,16 @@ pub(crate) fn run_new(action_name: Option<&str>, option_name: Option<&str>) -> R
             // Wizard form
             let repo_root = current_git_repo_root(&cwd)?;
             let current_branch = current_branch_with_cancel(&repo_root, None)?;
+            let custom_main_branch = crate::cli::find_repo_custom_main_branch(&repo_root);
+            let is_on_main =
+                is_mainline_branch_name(&current_branch, custom_main_branch.as_deref());
             let work_option = prompt_work_type_selection(&current_branch)?;
-            let action = prompt_bump_kind_selection()?;
-            run_bump(action, Some(work_option))
+            let action = prompt_branch_action_selection(is_on_main)?;
+            match action {
+                BranchAction::Bump(bump) => run_bump(bump, Some(work_option)),
+                BranchAction::Alt => crate::git::run_new_alt(None),
+                BranchAction::Sub => crate::git::run_new_sub(None),
+            }
         }
     }
 }
@@ -224,19 +231,36 @@ fn render_work_type_picker(
 }
 
 // ---------------------------------------------------------------------------
-// Step 2 — bump kind picker
+// Step 2 — branch action picker (context-aware)
 // ---------------------------------------------------------------------------
 
-const BUMP_OPTIONS: [(&str, &str); 3] =
+enum BranchAction {
+    Bump(&'static str),
+    Alt,
+    Sub,
+}
+
+const MAIN_OPTIONS: [(&str, &str); 3] =
     [("patch", "Patch"), ("minor", "Minor"), ("major", "Major")];
 
-fn prompt_bump_kind_selection() -> Result<&'static str> {
+const NON_MAIN_OPTIONS: [(&str, &str); 3] = [("patch", "Patch"), ("alt", "alt"), ("sub", "SUB")];
+
+fn branch_action_options(is_on_main: bool) -> &'static [(&'static str, &'static str)] {
+    if is_on_main {
+        &MAIN_OPTIONS
+    } else {
+        &NON_MAIN_OPTIONS
+    }
+}
+
+fn prompt_branch_action_selection(is_on_main: bool) -> Result<BranchAction> {
+    let options = branch_action_options(is_on_main);
     let mut selected = 0usize;
     let mut rendered_lines = 0usize;
     let raw_mode = RawModeGuard::enter()?;
 
     loop {
-        render_bump_kind_picker(selected, &mut rendered_lines)?;
+        render_branch_action_picker(is_on_main, selected, &mut rendered_lines)?;
 
         let Event::Key(key) = event::read().context("failed to read key event")? else {
             continue;
@@ -252,31 +276,43 @@ fn prompt_bump_kind_selection() -> Result<&'static str> {
                 bail!("Cancelled by user")
             }
             KeyCode::Up | KeyCode::BackTab => {
-                selected = selected.checked_sub(1).unwrap_or(BUMP_OPTIONS.len() - 1);
+                selected = selected.checked_sub(1).unwrap_or(options.len() - 1);
             }
             KeyCode::Down | KeyCode::Tab => {
-                selected = (selected + 1) % BUMP_OPTIONS.len();
+                selected = (selected + 1) % options.len();
             }
             KeyCode::Char(c) if c.is_ascii_digit() => {
                 if let Some(index) = c.to_digit(10).and_then(|d| d.checked_sub(1)) {
                     let index = index as usize;
-                    if index < BUMP_OPTIONS.len() {
+                    if index < options.len() {
                         selected = index;
                     }
                 }
             }
             KeyCode::Enter => {
-                let result = BUMP_OPTIONS[selected].0;
+                let (key, _) = options[selected];
                 drop(raw_mode);
                 println!();
-                return Ok(result);
+                return Ok(match key {
+                    "patch" => BranchAction::Bump("patch"),
+                    "minor" => BranchAction::Bump("minor"),
+                    "major" => BranchAction::Bump("major"),
+                    "alt" => BranchAction::Alt,
+                    "sub" => BranchAction::Sub,
+                    _ => bail!("unknown branch action '{}'", key),
+                });
             }
             _ => {}
         }
     }
 }
 
-fn render_bump_kind_picker(selected: usize, rendered_lines: &mut usize) -> Result<()> {
+fn render_branch_action_picker(
+    is_on_main: bool,
+    selected: usize,
+    rendered_lines: &mut usize,
+) -> Result<()> {
+    let options = branch_action_options(is_on_main);
     let mut stdout = io::stdout();
 
     if *rendered_lines > 0 {
@@ -286,24 +322,28 @@ fn render_bump_kind_picker(selected: usize, rendered_lines: &mut usize) -> Resul
             MoveToColumn(0),
             Clear(ClearType::FromCursorDown)
         )
-        .context("failed to redraw bump kind picker")?;
+        .context("failed to redraw branch action picker")?;
     }
 
     // blank
-    queue!(stdout, MoveToColumn(0), Print("\r\n")).context("render bump kind: blank 1")?;
+    queue!(stdout, MoveToColumn(0), Print("\r\n")).context("render action: blank 1")?;
     // question (Cyan)
     queue!(
         stdout,
         MoveToColumn(0),
         SetForegroundColor(Color::Cyan),
-        Print("What kind of version bump?\r\n"),
+        Print(if is_on_main {
+            "What kind of version bump?\r\n"
+        } else {
+            "What would you like to do?\r\n"
+        }),
         ResetColor
     )
-    .context("render bump kind: question")?;
+    .context("render action: question")?;
     // blank
-    queue!(stdout, MoveToColumn(0), Print("\r\n")).context("render bump kind: blank 2")?;
+    queue!(stdout, MoveToColumn(0), Print("\r\n")).context("render action: blank 2")?;
     // options
-    for (index, (_, label)) in BUMP_OPTIONS.iter().enumerate() {
+    for (index, (_, label)) in options.iter().enumerate() {
         let marker = if index == selected { ">" } else { " " };
         let color = if index == selected {
             Color::Yellow
@@ -317,15 +357,17 @@ fn render_bump_kind_picker(selected: usize, rendered_lines: &mut usize) -> Resul
             Print(format!("{} {}. {}\r\n", marker, index + 1, label)),
             ResetColor
         )
-        .context("render bump kind: option")?;
+        .context("render action: option")?;
     }
     // trailing blank
-    queue!(stdout, MoveToColumn(0), Print("\r\n")).context("render bump kind: trailing blank")?;
+    queue!(stdout, MoveToColumn(0), Print("\r\n")).context("render action: trailing blank")?;
 
-    stdout.flush().context("failed to flush bump kind picker")?;
+    stdout
+        .flush()
+        .context("failed to flush branch action picker")?;
 
-    // Line count: 1 blank + 1 question + 1 blank + N options + 1 trailing blank = 3 + N + 1
-    *rendered_lines = 4 + BUMP_OPTIONS.len();
+    // Line count: 1 blank + 1 question + 1 blank + N options + 1 trailing blank
+    *rendered_lines = 4 + options.len();
     Ok(())
 }
 
@@ -386,9 +428,34 @@ mod tests {
     }
 
     #[test]
-    fn bump_options_have_three_entries() {
-        assert_eq!(BUMP_OPTIONS.len(), 3);
-        let actions: Vec<&str> = BUMP_OPTIONS.iter().map(|(a, _)| *a).collect();
+    fn main_options_have_three_entries() {
+        assert_eq!(MAIN_OPTIONS.len(), 3);
+        let actions: Vec<&str> = MAIN_OPTIONS.iter().map(|(a, _)| *a).collect();
         assert_eq!(actions, ["patch", "minor", "major"]);
+    }
+
+    #[test]
+    fn non_main_options_have_three_entries() {
+        assert_eq!(NON_MAIN_OPTIONS.len(), 3);
+        let actions: Vec<&str> = NON_MAIN_OPTIONS.iter().map(|(a, _)| *a).collect();
+        assert_eq!(actions, ["patch", "alt", "sub"]);
+    }
+
+    #[test]
+    fn branch_action_options_returns_main_on_main() {
+        let options = branch_action_options(true);
+        assert_eq!(options.len(), 3);
+        assert_eq!(options[0].0, "patch");
+        assert_eq!(options[1].0, "minor");
+        assert_eq!(options[2].0, "major");
+    }
+
+    #[test]
+    fn branch_action_options_returns_non_main_on_dev() {
+        let options = branch_action_options(false);
+        assert_eq!(options.len(), 3);
+        assert_eq!(options[0].0, "patch");
+        assert_eq!(options[1].0, "alt");
+        assert_eq!(options[2].0, "sub");
     }
 }

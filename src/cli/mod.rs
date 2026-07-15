@@ -3565,7 +3565,7 @@ fn load_config() -> Result<AppConfig> {
     ConfigStore::locate()?.load()
 }
 
-fn find_repo_custom_main_branch(repo_root: &str) -> Option<String> {
+pub(crate) fn find_repo_custom_main_branch(repo_root: &str) -> Option<String> {
     let canonical_repo_root = best_effort_canonicalize(Path::new(repo_root));
     let config = load_config().ok()?;
 
