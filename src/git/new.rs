@@ -73,6 +73,7 @@ pub(crate) fn run_new(action_name: Option<&str>, option_name: Option<&str>) -> R
                 BranchAction::Bump(bump) => run_bump(bump, Some(work_option)),
                 BranchAction::Alt => crate::git::run_new_alt(None),
                 BranchAction::Sub => crate::git::run_new_sub(None),
+                BranchAction::Off => crate::git::run_new_off(None),
             }
         }
     }
@@ -238,12 +239,18 @@ enum BranchAction {
     Bump(&'static str),
     Alt,
     Sub,
+    Off,
 }
 
 const MAIN_OPTIONS: [(&str, &str); 3] =
     [("patch", "Patch"), ("minor", "Minor"), ("major", "Major")];
 
-const NON_MAIN_OPTIONS: [(&str, &str); 3] = [("patch", "Patch"), ("alt", "alt"), ("sub", "SUB")];
+const NON_MAIN_OPTIONS: [(&str, &str); 4] = [
+    ("patch", "Patch"),
+    ("alt", "alt"),
+    ("sub", "SUB"),
+    ("off", "OFF"),
+];
 
 fn branch_action_options(is_on_main: bool) -> &'static [(&'static str, &'static str)] {
     if is_on_main {
@@ -299,6 +306,7 @@ fn prompt_branch_action_selection(is_on_main: bool) -> Result<BranchAction> {
                     "major" => BranchAction::Bump("major"),
                     "alt" => BranchAction::Alt,
                     "sub" => BranchAction::Sub,
+                    "off" => BranchAction::Off,
                     _ => bail!("unknown branch action '{}'", key),
                 });
             }
@@ -435,10 +443,10 @@ mod tests {
     }
 
     #[test]
-    fn non_main_options_have_three_entries() {
-        assert_eq!(NON_MAIN_OPTIONS.len(), 3);
+    fn non_main_options_have_four_entries() {
+        assert_eq!(NON_MAIN_OPTIONS.len(), 4);
         let actions: Vec<&str> = NON_MAIN_OPTIONS.iter().map(|(a, _)| *a).collect();
-        assert_eq!(actions, ["patch", "alt", "sub"]);
+        assert_eq!(actions, ["patch", "alt", "sub", "off"]);
     }
 
     #[test]
@@ -453,9 +461,10 @@ mod tests {
     #[test]
     fn branch_action_options_returns_non_main_on_dev() {
         let options = branch_action_options(false);
-        assert_eq!(options.len(), 3);
+        assert_eq!(options.len(), 4);
         assert_eq!(options[0].0, "patch");
         assert_eq!(options[1].0, "alt");
         assert_eq!(options[2].0, "sub");
+        assert_eq!(options[3].0, "off");
     }
 }
