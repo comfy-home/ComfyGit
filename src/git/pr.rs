@@ -2111,6 +2111,30 @@ mod tests {
     }
 
     #[test]
+    fn comfygitflow_root_distance_numeric_off() {
+        assert_eq!(comfygitflow_root_distance("v0.37.2-dev-OFF1"), Some(3));
+        assert_eq!(
+            comfygitflow_root_distance("v0.37.2-dev-OFF1--suffix"),
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn comfygitflow_root_distance_letter_off() {
+        assert_eq!(comfygitflow_root_distance("v0.37.2-dev-OFF2A"), Some(4));
+    }
+
+    #[test]
+    fn comfygitflow_root_distance_nested_with_off() {
+        assert_eq!(comfygitflow_root_distance("v0.37.2-dev-SUB1-OFF1"), Some(4));
+        assert_eq!(comfygitflow_root_distance("v0.37.2-dev-OFF1-alt1"), Some(4));
+        assert_eq!(
+            comfygitflow_root_distance("v0.37.2-dev-OFF1-SUB1-alt1"),
+            Some(5)
+        );
+    }
+
+    #[test]
     fn comfygitflow_root_distance_unknown_branch() {
         assert_eq!(comfygitflow_root_distance("main"), None);
         assert_eq!(comfygitflow_root_distance("feature/foo"), None);
