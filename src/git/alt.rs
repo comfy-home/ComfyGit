@@ -5,14 +5,17 @@
 //
 // For details, see the LICENSE file in the repository root.
 
-//! Deviation branches — `cg new alt`, `cg new sub`, and `cg new off`.
+//! Deviation branches — `cg new alt`, `cg new sub`, and `cg new ot`.
 //!
 //! Alternative (`alt`) branches use `-alt` marker: `v0.1.5-dev-alt1`, `v0.1.5-dev-alt2A`.
 //! Sub-development (`SUB`) branches use `-SUB` marker: `v0.1.5-dev-SUB1`, `v0.1.5-dev-SUB1A`.
-//! Offline (`OFF`) branches use `-OFF` marker: `v0.1.5-dev-OFF1`, `v0.1.5-dev-OFF1A`.
+//! Off-topic (`OT`) branches use `-OT` marker: `v0.1.5-dev-OT1`, `v0.1.5-dev-OT1A`.
 //!
 //! All follow the same numeric → letter pattern and can be nested cross-type:
-//! `v0.1.5-dev-SUB1-alt1`, `v0.1.5-dev-alt1-OFF1A`, etc.
+//! `v0.1.5-dev-SUB1-alt1`, `v0.1.5-dev-alt1-OT1A`, etc.
+//!
+//! `OT` branches can also be created from release-line (`x`) branches:
+//! `0.37.x-OT1`, `0.37.x-OT1A`.
 
 // ---------------------------------------------------------------------------
 // Deviation kind descriptor
@@ -36,13 +39,13 @@ const SUB_KIND: DeviationKind = DeviationKind {
     command: "sub",
 };
 
-const OFF_KIND: DeviationKind = DeviationKind {
-    marker: "-OFF",
-    label: "OFF",
-    command: "off",
+const OT_KIND: DeviationKind = DeviationKind {
+    marker: "-OT",
+    label: "OT",
+    command: "ot",
 };
 
-const DEVIATION_MARKERS: [&str; 3] = ["-alt", "-SUB", "-OFF"];
+const DEVIATION_MARKERS: [&str; 3] = ["-alt", "-SUB", "-OT"];
 
 pub(crate) fn find_rightmost_marker(base: &str) -> Option<(usize, &'static str)> {
     DEVIATION_MARKERS
@@ -91,8 +94,8 @@ pub(crate) fn run_new_sub(option_name: Option<&str>) -> Result<()> {
     run_new_deviation(option_name, &SUB_KIND)
 }
 
-pub(crate) fn run_new_off(option_name: Option<&str>) -> Result<()> {
-    run_new_deviation(option_name, &OFF_KIND)
+pub(crate) fn run_new_ot(option_name: Option<&str>) -> Result<()> {
+    run_new_deviation(option_name, &OT_KIND)
 }
 
 fn run_new_deviation(option_name: Option<&str>, kind: &DeviationKind) -> Result<()> {
@@ -216,7 +219,7 @@ fn deviation_merge_parent_candidates(
     }
 
     let parent_base = &base[..pos];
-    if !parent_base.contains("-dev") {
+    if !is_valid_deviation_root(parent_base) {
         return None;
     }
 
@@ -353,7 +356,7 @@ fn branch_exists(existing_branches: &[String], candidate: &str) -> bool {
 
 fn validate_deviation_creation_source(current_branch: &str, kind: &DeviationKind) -> Result<()> {
     let (base, _) = split_specific_suffix(current_branch);
-    if !base.contains("-dev") {
+    if !(base.contains("-dev") || kind.command == "ot" && base.ends_with(".x")) {
         bail!(
             "cg new {} can only be run from a dev branch or an existing deviation branch; \
              current branch is '{}'",
@@ -415,7 +418,7 @@ fn classify_deviation_source(base: &str, kind: &DeviationKind) -> Result<Deviati
         return Ok(DeviationSourceKind::NumericDeviation);
     }
 
-    if base.contains("-dev") {
+    if base.contains("-dev") || (kind.command == "ot" && base.ends_with(".x")) {
         return Ok(DeviationSourceKind::DevBranch);
     }
 
@@ -466,6 +469,10 @@ fn parse_letter_deviation_base(base: &str, marker: &str) -> Option<(String, char
     Some((numeric_base, letter))
 }
 
+fn is_valid_deviation_root(branch: &str) -> bool {
+    branch.contains("-dev") || branch.ends_with(".x")
+}
+
 fn strip_to_dev_base(base: &str) -> Option<String> {
     let (pos, marker) = find_rightmost_marker(base)?;
     let suffix = &base[pos + marker.len()..];
@@ -478,7 +485,7 @@ fn strip_to_dev_base(base: &str) -> Option<String> {
         return None;
     }
     let parent = &base[..pos];
-    if !parent.contains("-dev") {
+    if !is_valid_deviation_root(parent) {
         return None;
     }
     if find_rightmost_marker(parent).is_none() {
@@ -1200,82 +1207,107 @@ mod tests {
     }
 
     #[test]
-    fn off_merge_parent_branch_returns_dev_for_numeric_off() {
+    fn ot_merge_parent_branch_returns_dev_for_numeric_ot() {
         let existing = vec!["v0.1.5-dev".to_string()];
         assert_eq!(
-            deviation_merge_parent_branch("v0.1.5-dev-OFF1", &existing).as_deref(),
+            deviation_merge_parent_branch("v0.1.5-dev-OT1", &existing).as_deref(),
             Some("v0.1.5-dev")
         );
     }
 
     #[test]
-    fn off_merge_parent_branch_returns_numeric_off_for_letter_off() {
-        let existing = vec!["v0.1.5-dev-OFF1".to_string(), "v0.1.5-dev".to_string()];
+    fn ot_merge_parent_branch_returns_numeric_ot_for_letter_ot() {
+        let existing = vec!["v0.1.5-dev-OT1".to_string(), "v0.1.5-dev".to_string()];
         assert_eq!(
-            deviation_merge_parent_branch("v0.1.5-dev-OFF1A", &existing).as_deref(),
-            Some("v0.1.5-dev-OFF1")
+            deviation_merge_parent_branch("v0.1.5-dev-OT1A", &existing).as_deref(),
+            Some("v0.1.5-dev-OT1")
         );
     }
 
     #[test]
-    fn off_sibling_branch_names_lists_other_offs_on_same_dev_branch() {
+    fn ot_merge_parent_branch_returns_x_branch_for_ot_from_x() {
+        let existing = vec!["0.37.x".to_string()];
+        assert_eq!(
+            deviation_merge_parent_branch("0.37.x-OT1", &existing).as_deref(),
+            Some("0.37.x")
+        );
+    }
+
+    #[test]
+    fn ot_sibling_branch_names_lists_other_ots_on_same_dev_branch() {
         let existing = vec![
             "v0.9.1-dev".to_string(),
-            "v0.9.1-dev-OFF1".to_string(),
-            "v0.9.1-dev-OFF2".to_string(),
-            "v0.9.1-dev-OFF3".to_string(),
+            "v0.9.1-dev-OT1".to_string(),
+            "v0.9.1-dev-OT2".to_string(),
+            "v0.9.1-dev-OT3".to_string(),
         ];
-        let siblings = deviation_sibling_branch_names("v0.9.1-dev-OFF2", &existing);
+        let siblings = deviation_sibling_branch_names("v0.9.1-dev-OT2", &existing);
         assert_eq!(
             siblings,
-            vec!["v0.9.1-dev-OFF1".to_string(), "v0.9.1-dev-OFF3".to_string(),]
+            vec!["v0.9.1-dev-OT1".to_string(), "v0.9.1-dev-OT3".to_string(),]
         );
     }
 
     #[test]
-    fn is_deviation_branch_recognizes_off() {
-        assert!(is_deviation_branch("v0.1.5-dev-OFF1"));
-        assert!(is_deviation_branch("v0.1.5-dev-OFF1A"));
+    fn is_deviation_branch_recognizes_ot() {
+        assert!(is_deviation_branch("v0.1.5-dev-OT1"));
+        assert!(is_deviation_branch("v0.1.5-dev-OT1A"));
         assert!(!is_deviation_branch("v0.1.5-dev"));
     }
 
     #[test]
-    fn deviation_merge_parent_cross_type_off_from_sub() {
+    fn deviation_merge_parent_cross_type_ot_from_sub() {
         let existing = vec!["v0.1.5-dev".to_string(), "v0.1.5-dev-SUB1".to_string()];
         assert_eq!(
-            deviation_merge_parent_branch("v0.1.5-dev-SUB1-OFF1", &existing).as_deref(),
+            deviation_merge_parent_branch("v0.1.5-dev-SUB1-OT1", &existing).as_deref(),
             Some("v0.1.5-dev-SUB1")
         );
     }
 
     #[test]
-    fn deviation_lineage_dev_base_for_off() {
+    fn deviation_lineage_dev_base_for_ot() {
         assert_eq!(
-            deviation_lineage_dev_base("v0.1.5-dev-OFF1-alt1-OFF1").as_deref(),
+            deviation_lineage_dev_base("v0.1.5-dev-OT1-alt1-OT1").as_deref(),
             Some("v0.1.5-dev")
         );
     }
 
     #[test]
-    fn suggest_off_branch_name_options_from_dev_branch() {
-        let options = suggest_deviation_branch_name_options("v0.1.5-dev", &[], &OFF_KIND)
+    fn ot_lineage_dev_base_from_x_branch() {
+        assert_eq!(
+            deviation_lineage_dev_base("0.37.x-OT1").as_deref(),
+            Some("0.37.x")
+        );
+    }
+
+    #[test]
+    fn suggest_ot_branch_name_options_from_dev_branch() {
+        let options = suggest_deviation_branch_name_options("v0.1.5-dev", &[], &OT_KIND)
             .expect("suggest options");
         assert_eq!(options.len(), 3);
-        assert_eq!(options[0].preview(), "v0.1.5-dev-OFF1");
+        assert_eq!(options[0].preview(), "v0.1.5-dev-OT1");
     }
 
     #[test]
-    fn suggest_off_branch_name_options_from_numeric_off() {
-        let options = suggest_deviation_branch_name_options("v0.1.5-dev-OFF2", &[], &OFF_KIND)
+    fn suggest_ot_branch_name_options_from_numeric_ot() {
+        let options = suggest_deviation_branch_name_options("v0.1.5-dev-OT2", &[], &OT_KIND)
             .expect("suggest options");
-        assert_eq!(options[0].preview(), "v0.1.5-dev-OFF2A");
+        assert_eq!(options[0].preview(), "v0.1.5-dev-OT2A");
     }
 
     #[test]
-    fn next_numeric_off_number_skips_existing_branches() {
-        let existing = vec!["v0.1.5-dev-OFF1".to_string(), "v0.1.5-dev-OFF2".to_string()];
+    fn suggest_ot_branch_name_options_from_x_branch() {
+        let options = suggest_deviation_branch_name_options("0.37.x", &[], &OT_KIND)
+            .expect("suggest options");
+        assert_eq!(options.len(), 3);
+        assert_eq!(options[0].preview(), "0.37.x-OT1");
+    }
+
+    #[test]
+    fn next_numeric_ot_number_skips_existing_branches() {
+        let existing = vec!["v0.1.5-dev-OT1".to_string(), "v0.1.5-dev-OT2".to_string()];
         assert_eq!(
-            next_numeric_deviation_number("v0.1.5-dev", &existing, &OFF_KIND),
+            next_numeric_deviation_number("v0.1.5-dev", &existing, &OT_KIND),
             3
         );
     }
