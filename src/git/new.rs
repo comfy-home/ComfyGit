@@ -67,7 +67,7 @@ pub(crate) fn run_new(action_name: Option<&str>, option_name: Option<&str>) -> R
         Some(action) => {
             // Direct form: cg new <action> [1|2]
             let bmp_option = translate_work_option(option_name)?;
-            run_bump(action, Some(bmp_option))
+            run_bump(action, Some(bmp_option), false)
         }
         None => {
             // Wizard form
@@ -81,7 +81,7 @@ pub(crate) fn run_new(action_name: Option<&str>, option_name: Option<&str>) -> R
             match action {
                 BranchAction::Bump(bump) => {
                     let work_option = prompt_work_type_selection(&current_branch)?;
-                    run_bump(bump, Some(work_option))
+                    run_bump(bump, Some(work_option), true)
                 }
                 BranchAction::Alt => crate::git::run_new_alt(None),
                 BranchAction::Sub => crate::git::run_new_sub(None),
@@ -265,7 +265,7 @@ const NON_MAIN_OPTIONS: [(&str, &str); 4] = [
     ),
     (
         "sub",
-        "SUB = a branch to SUB-branch current workload if too complicated, no version bump.",
+        "SUB = a branch to SUB-branch current workload to keep it separate, no version bump.",
     ),
     (
         "ot",
