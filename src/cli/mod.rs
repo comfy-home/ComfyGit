@@ -373,11 +373,11 @@ fn dispatch_args(args: &[String]) -> Result<StartupMode> {
             Ok(StartupMode::Handled)
         }
         [command, action] if is_bump_command(command) => {
-            run_bump(action, None)?;
+            run_bump(action, None, false)?;
             Ok(StartupMode::Handled)
         }
         [command, action, option] if is_bump_command(command) => {
-            run_bump(action, Some(option))?;
+            run_bump(action, Some(option), false)?;
             Ok(StartupMode::Handled)
         }
         [command] if is_new_command(command) => {
@@ -398,6 +398,14 @@ fn dispatch_args(args: &[String]) -> Result<StartupMode> {
         }
         [command, action, option] if is_new_command(command) && action == "sub" => {
             crate::git::run_new_sub(Some(option))?;
+            Ok(StartupMode::Handled)
+        }
+        [command, action] if is_new_command(command) && action == "ot" => {
+            crate::git::run_new_ot(None)?;
+            Ok(StartupMode::Handled)
+        }
+        [command, action, option] if is_new_command(command) && action == "ot" => {
+            crate::git::run_new_ot(Some(option))?;
             Ok(StartupMode::Handled)
         }
         [command, action] if is_new_command(command) => {
@@ -1146,7 +1154,11 @@ fn print_project_version(lookup: &str) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn run_bump(action_name: &str, option_name: Option<&str>) -> Result<()> {
+pub(crate) fn run_bump(
+    action_name: &str,
+    option_name: Option<&str>,
+    skip_non_main_check: bool,
+) -> Result<()> {
     let config = load_config()?;
     let cwd =
         best_effort_canonicalize(&env::current_dir().context("failed to read current directory")?);
@@ -1198,7 +1210,7 @@ pub(crate) fn run_bump(action_name: &str, option_name: Option<&str>) -> Result<(
                 &git_contexts,
                 &affected_indexes,
             )?;
-            if !non_main_repo_states.is_empty() {
+            if !non_main_repo_states.is_empty() && !skip_non_main_check {
                 println!(
                     "{}Just to check: Are you aware you are currently on a NON-MAIN branch?{}",
                     ANSI_CYAN, ANSI_RESET

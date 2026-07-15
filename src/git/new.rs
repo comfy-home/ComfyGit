@@ -36,6 +36,15 @@ use crate::{
     git::{current_branch_with_cancel, is_mainline_branch_name},
 };
 
+fn is_release_line_branch_name(branch: &str) -> bool {
+    let normalized = branch.trim().trim_start_matches('v');
+    let base = normalized
+        .split_once("--")
+        .map(|(base, _)| base)
+        .unwrap_or(normalized);
+    base.ends_with(".x")
+}
+
 // ---------------------------------------------------------------------------
 // Public entry point
 // ---------------------------------------------------------------------------
@@ -58,7 +67,7 @@ pub(crate) fn run_new(action_name: Option<&str>, option_name: Option<&str>) -> R
         Some(action) => {
             // Direct form: cg new <action> [1|2]
             let bmp_option = translate_work_option(option_name)?;
-            run_bump(action, Some(bmp_option))
+            run_bump(action, Some(bmp_option), false)
         }
         None => {
             // Wizard form
@@ -67,12 +76,16 @@ pub(crate) fn run_new(action_name: Option<&str>, option_name: Option<&str>) -> R
             let custom_main_branch = crate::cli::find_repo_custom_main_branch(&repo_root);
             let is_on_main =
                 is_mainline_branch_name(&current_branch, custom_main_branch.as_deref());
-            let work_option = prompt_work_type_selection(&current_branch)?;
-            let action = prompt_branch_action_selection(is_on_main)?;
+            let is_on_x = is_release_line_branch_name(&current_branch);
+            let action = prompt_branch_action_selection(is_on_main, is_on_x)?;
             match action {
-                BranchAction::Bump(bump) => run_bump(bump, Some(work_option)),
+                BranchAction::Bump(bump) => {
+                    let work_option = prompt_work_type_selection(&current_branch)?;
+                    run_bump(bump, Some(work_option), true)
+                }
                 BranchAction::Alt => crate::git::run_new_alt(None),
                 BranchAction::Sub => crate::git::run_new_sub(None),
+                BranchAction::Ot => crate::git::run_new_ot(None),
             }
         }
     }
@@ -238,29 +251,60 @@ enum BranchAction {
     Bump(&'static str),
     Alt,
     Sub,
+    Ot,
 }
 
 const MAIN_OPTIONS: [(&str, &str); 3] =
     [("patch", "Patch"), ("minor", "Minor"), ("major", "Major")];
 
-const NON_MAIN_OPTIONS: [(&str, &str); 3] = [("patch", "Patch"), ("alt", "alt"), ("sub", "SUB")];
+const NON_MAIN_OPTIONS: [(&str, &str); 4] = [
+    ("patch", "Patch"),
+    (
+        "alt",
+        "alt = a branch to test alternative approaches, no version bump.",
+    ),
+    (
+        "sub",
+        "SUB = a branch to SUB-branch current workload to keep it separate, no version bump.",
+    ),
+    (
+        "ot",
+        "OT = a branch to solve an off-topic issue, no version bump.",
+    ),
+];
 
-fn branch_action_options(is_on_main: bool) -> &'static [(&'static str, &'static str)] {
+const X_BRANCH_OPTIONS: [(&str, &str); 2] = [
+    (
+        "patch",
+        "Patch (create dev branch with +1 patch, includes bump)",
+    ),
+    (
+        "ot",
+        "OT = a branch to solve an off-topic issue, no version bump.",
+    ),
+];
+
+fn branch_action_options(
+    is_on_main: bool,
+    is_on_x: bool,
+) -> &'static [(&'static str, &'static str)] {
     if is_on_main {
         &MAIN_OPTIONS
+    } else if is_on_x {
+        &X_BRANCH_OPTIONS
     } else {
         &NON_MAIN_OPTIONS
     }
 }
 
-fn prompt_branch_action_selection(is_on_main: bool) -> Result<BranchAction> {
-    let options = branch_action_options(is_on_main);
+fn prompt_branch_action_selection(is_on_main: bool, is_on_x: bool) -> Result<BranchAction> {
+    let options = branch_action_options(is_on_main, is_on_x);
     let mut selected = 0usize;
     let mut rendered_lines = 0usize;
     let raw_mode = RawModeGuard::enter()?;
 
     loop {
-        render_branch_action_picker(is_on_main, selected, &mut rendered_lines)?;
+        render_branch_action_picker(is_on_main, is_on_x, selected, &mut rendered_lines)?;
 
         let Event::Key(key) = event::read().context("failed to read key event")? else {
             continue;
@@ -299,6 +343,7 @@ fn prompt_branch_action_selection(is_on_main: bool) -> Result<BranchAction> {
                     "major" => BranchAction::Bump("major"),
                     "alt" => BranchAction::Alt,
                     "sub" => BranchAction::Sub,
+                    "ot" => BranchAction::Ot,
                     _ => bail!("unknown branch action '{}'", key),
                 });
             }
@@ -309,10 +354,11 @@ fn prompt_branch_action_selection(is_on_main: bool) -> Result<BranchAction> {
 
 fn render_branch_action_picker(
     is_on_main: bool,
+    is_on_x: bool,
     selected: usize,
     rendered_lines: &mut usize,
 ) -> Result<()> {
-    let options = branch_action_options(is_on_main);
+    let options = branch_action_options(is_on_main, is_on_x);
     let mut stdout = io::stdout();
 
     if *rendered_lines > 0 {
@@ -435,15 +481,22 @@ mod tests {
     }
 
     #[test]
-    fn non_main_options_have_three_entries() {
-        assert_eq!(NON_MAIN_OPTIONS.len(), 3);
+    fn non_main_options_have_four_entries() {
+        assert_eq!(NON_MAIN_OPTIONS.len(), 4);
         let actions: Vec<&str> = NON_MAIN_OPTIONS.iter().map(|(a, _)| *a).collect();
-        assert_eq!(actions, ["patch", "alt", "sub"]);
+        assert_eq!(actions, ["patch", "alt", "sub", "ot"]);
+    }
+
+    #[test]
+    fn x_branch_options_have_two_entries() {
+        assert_eq!(X_BRANCH_OPTIONS.len(), 2);
+        assert_eq!(X_BRANCH_OPTIONS[0].0, "patch");
+        assert_eq!(X_BRANCH_OPTIONS[1].0, "ot");
     }
 
     #[test]
     fn branch_action_options_returns_main_on_main() {
-        let options = branch_action_options(true);
+        let options = branch_action_options(true, false);
         assert_eq!(options.len(), 3);
         assert_eq!(options[0].0, "patch");
         assert_eq!(options[1].0, "minor");
@@ -452,10 +505,19 @@ mod tests {
 
     #[test]
     fn branch_action_options_returns_non_main_on_dev() {
-        let options = branch_action_options(false);
-        assert_eq!(options.len(), 3);
+        let options = branch_action_options(false, false);
+        assert_eq!(options.len(), 4);
         assert_eq!(options[0].0, "patch");
         assert_eq!(options[1].0, "alt");
         assert_eq!(options[2].0, "sub");
+        assert_eq!(options[3].0, "ot");
+    }
+
+    #[test]
+    fn branch_action_options_returns_patch_and_ot_on_x_branch() {
+        let options = branch_action_options(false, true);
+        assert_eq!(options.len(), 2);
+        assert_eq!(options[0].0, "patch");
+        assert_eq!(options[1].0, "ot");
     }
 }
