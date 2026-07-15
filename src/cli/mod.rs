@@ -400,6 +400,14 @@ fn dispatch_args(args: &[String]) -> Result<StartupMode> {
             crate::git::run_new_sub(Some(option))?;
             Ok(StartupMode::Handled)
         }
+        [command, action] if is_new_command(command) && action == "off" => {
+            crate::git::run_new_off(None)?;
+            Ok(StartupMode::Handled)
+        }
+        [command, action, option] if is_new_command(command) && action == "off" => {
+            crate::git::run_new_off(Some(option))?;
+            Ok(StartupMode::Handled)
+        }
         [command, action] if is_new_command(command) => {
             crate::git::run_new(Some(action), None)?;
             Ok(StartupMode::Handled)
