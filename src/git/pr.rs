@@ -1265,8 +1265,9 @@ pub(crate) fn comfygitflow_root_distance(branch_name: &str) -> Option<usize> {
         return Some(2);
     }
     if crate::git::is_deviation_branch(trimmed) {
-        let mut distance = 2usize;
         let mut remaining = base;
+        // Count all deviation marker levels
+        let mut levels = 0usize;
         while let Some((pos, marker)) = crate::git::find_rightmost_marker(remaining) {
             let suffix = &remaining[pos + marker.len()..];
             let digit_len = suffix.chars().take_while(|ch| ch.is_ascii_digit()).count();
@@ -1277,14 +1278,21 @@ pub(crate) fn comfygitflow_root_distance(branch_name: &str) -> Option<usize> {
             if !rest.is_empty() && !rest.chars().all(|ch| ch.is_ascii_uppercase()) {
                 break;
             }
-            distance += 1;
+            levels += 1;
             if !rest.is_empty() {
-                distance += 1;
+                levels += 1;
             }
             remaining = &remaining[..pos];
         }
-        return Some(distance);
+        // remaining is now the root branch — determine its distance
+        let root_distance = if is_release_line_branch_name(remaining) {
+            1
+        } else {
+            2
+        };
+        return Some(root_distance + levels);
     }
+
     None
 }
 
@@ -2111,27 +2119,33 @@ mod tests {
     }
 
     #[test]
-    fn comfygitflow_root_distance_numeric_off() {
-        assert_eq!(comfygitflow_root_distance("v0.37.2-dev-OFF1"), Some(3));
+    fn comfygitflow_root_distance_numeric_ot() {
+        assert_eq!(comfygitflow_root_distance("v0.37.2-dev-OT1"), Some(3));
         assert_eq!(
-            comfygitflow_root_distance("v0.37.2-dev-OFF1--suffix"),
+            comfygitflow_root_distance("v0.37.2-dev-OT1--suffix"),
             Some(3)
         );
     }
 
     #[test]
-    fn comfygitflow_root_distance_letter_off() {
-        assert_eq!(comfygitflow_root_distance("v0.37.2-dev-OFF2A"), Some(4));
+    fn comfygitflow_root_distance_letter_ot() {
+        assert_eq!(comfygitflow_root_distance("v0.37.2-dev-OT2A"), Some(4));
     }
 
     #[test]
-    fn comfygitflow_root_distance_nested_with_off() {
-        assert_eq!(comfygitflow_root_distance("v0.37.2-dev-SUB1-OFF1"), Some(4));
-        assert_eq!(comfygitflow_root_distance("v0.37.2-dev-OFF1-alt1"), Some(4));
+    fn comfygitflow_root_distance_nested_with_ot() {
+        assert_eq!(comfygitflow_root_distance("v0.37.2-dev-SUB1-OT1"), Some(4));
+        assert_eq!(comfygitflow_root_distance("v0.37.2-dev-OT1-alt1"), Some(4));
         assert_eq!(
-            comfygitflow_root_distance("v0.37.2-dev-OFF1-SUB1-alt1"),
+            comfygitflow_root_distance("v0.37.2-dev-OT1-SUB1-alt1"),
             Some(5)
         );
+    }
+
+    #[test]
+    fn comfygitflow_root_distance_ot_from_x_branch() {
+        assert_eq!(comfygitflow_root_distance("0.37.x-OT1"), Some(2));
+        assert_eq!(comfygitflow_root_distance("0.37.x-OT1A"), Some(3));
     }
 
     #[test]
