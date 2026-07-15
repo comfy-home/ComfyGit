@@ -5,13 +5,14 @@
 //
 // For details, see the LICENSE file in the repository root.
 
-//! Deviation branches — `cg new alt` and `cg new sub`.
+//! Deviation branches — `cg new alt`, `cg new sub`, and `cg new off`.
 //!
 //! Alternative (`alt`) branches use `-alt` marker: `v0.1.5-dev-alt1`, `v0.1.5-dev-alt2A`.
 //! Sub-development (`SUB`) branches use `-SUB` marker: `v0.1.5-dev-SUB1`, `v0.1.5-dev-SUB1A`.
+//! Offline (`OFF`) branches use `-OFF` marker: `v0.1.5-dev-OFF1`, `v0.1.5-dev-OFF1A`.
 //!
-//! Both follow the same numeric → letter pattern and can be nested cross-type:
-//! `v0.1.5-dev-SUB1-alt1`, `v0.1.5-dev-alt1-SUB1A`, etc.
+//! All follow the same numeric → letter pattern and can be nested cross-type:
+//! `v0.1.5-dev-SUB1-alt1`, `v0.1.5-dev-alt1-OFF1A`, etc.
 
 // ---------------------------------------------------------------------------
 // Deviation kind descriptor
@@ -35,7 +36,13 @@ const SUB_KIND: DeviationKind = DeviationKind {
     command: "sub",
 };
 
-const DEVIATION_MARKERS: [&str; 2] = ["-alt", "-SUB"];
+const OFF_KIND: DeviationKind = DeviationKind {
+    marker: "-OFF",
+    label: "OFF",
+    command: "off",
+};
+
+const DEVIATION_MARKERS: [&str; 3] = ["-alt", "-SUB", "-OFF"];
 
 pub(crate) fn find_rightmost_marker(base: &str) -> Option<(usize, &'static str)> {
     DEVIATION_MARKERS
@@ -82,6 +89,10 @@ pub(crate) fn run_new_alt(option_name: Option<&str>) -> Result<()> {
 
 pub(crate) fn run_new_sub(option_name: Option<&str>) -> Result<()> {
     run_new_deviation(option_name, &SUB_KIND)
+}
+
+pub(crate) fn run_new_off(option_name: Option<&str>) -> Result<()> {
+    run_new_deviation(option_name, &OFF_KIND)
 }
 
 fn run_new_deviation(option_name: Option<&str>, kind: &DeviationKind) -> Result<()> {
@@ -1184,6 +1195,87 @@ mod tests {
         let existing = vec!["v0.1.5-dev-SUB1".to_string(), "v0.1.5-dev-SUB2".to_string()];
         assert_eq!(
             next_numeric_deviation_number("v0.1.5-dev", &existing, &SUB_KIND),
+            3
+        );
+    }
+
+    #[test]
+    fn off_merge_parent_branch_returns_dev_for_numeric_off() {
+        let existing = vec!["v0.1.5-dev".to_string()];
+        assert_eq!(
+            deviation_merge_parent_branch("v0.1.5-dev-OFF1", &existing).as_deref(),
+            Some("v0.1.5-dev")
+        );
+    }
+
+    #[test]
+    fn off_merge_parent_branch_returns_numeric_off_for_letter_off() {
+        let existing = vec!["v0.1.5-dev-OFF1".to_string(), "v0.1.5-dev".to_string()];
+        assert_eq!(
+            deviation_merge_parent_branch("v0.1.5-dev-OFF1A", &existing).as_deref(),
+            Some("v0.1.5-dev-OFF1")
+        );
+    }
+
+    #[test]
+    fn off_sibling_branch_names_lists_other_offs_on_same_dev_branch() {
+        let existing = vec![
+            "v0.9.1-dev".to_string(),
+            "v0.9.1-dev-OFF1".to_string(),
+            "v0.9.1-dev-OFF2".to_string(),
+            "v0.9.1-dev-OFF3".to_string(),
+        ];
+        let siblings = deviation_sibling_branch_names("v0.9.1-dev-OFF2", &existing);
+        assert_eq!(
+            siblings,
+            vec!["v0.9.1-dev-OFF1".to_string(), "v0.9.1-dev-OFF3".to_string(),]
+        );
+    }
+
+    #[test]
+    fn is_deviation_branch_recognizes_off() {
+        assert!(is_deviation_branch("v0.1.5-dev-OFF1"));
+        assert!(is_deviation_branch("v0.1.5-dev-OFF1A"));
+        assert!(!is_deviation_branch("v0.1.5-dev"));
+    }
+
+    #[test]
+    fn deviation_merge_parent_cross_type_off_from_sub() {
+        let existing = vec!["v0.1.5-dev".to_string(), "v0.1.5-dev-SUB1".to_string()];
+        assert_eq!(
+            deviation_merge_parent_branch("v0.1.5-dev-SUB1-OFF1", &existing).as_deref(),
+            Some("v0.1.5-dev-SUB1")
+        );
+    }
+
+    #[test]
+    fn deviation_lineage_dev_base_for_off() {
+        assert_eq!(
+            deviation_lineage_dev_base("v0.1.5-dev-OFF1-alt1-OFF1").as_deref(),
+            Some("v0.1.5-dev")
+        );
+    }
+
+    #[test]
+    fn suggest_off_branch_name_options_from_dev_branch() {
+        let options = suggest_deviation_branch_name_options("v0.1.5-dev", &[], &OFF_KIND)
+            .expect("suggest options");
+        assert_eq!(options.len(), 3);
+        assert_eq!(options[0].preview(), "v0.1.5-dev-OFF1");
+    }
+
+    #[test]
+    fn suggest_off_branch_name_options_from_numeric_off() {
+        let options = suggest_deviation_branch_name_options("v0.1.5-dev-OFF2", &[], &OFF_KIND)
+            .expect("suggest options");
+        assert_eq!(options[0].preview(), "v0.1.5-dev-OFF2A");
+    }
+
+    #[test]
+    fn next_numeric_off_number_skips_existing_branches() {
+        let existing = vec!["v0.1.5-dev-OFF1".to_string(), "v0.1.5-dev-OFF2".to_string()];
+        assert_eq!(
+            next_numeric_deviation_number("v0.1.5-dev", &existing, &OFF_KIND),
             3
         );
     }
