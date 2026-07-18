@@ -200,11 +200,13 @@ fn dispatch_args(args: &[String]) -> Result<StartupMode> {
             Ok(StartupMode::Handled)
         }
         [command] if is_sync_command(command) => {
-            crate::workflow::cli_sync::run_sync()?;
+            with_cli_git_cancellation(|_cancel| crate::workflow::cli_sync::run_sync())?;
             Ok(StartupMode::Handled)
         }
         [command, flag] if is_sync_command(command) && is_sync_yes_flag(flag) => {
-            crate::workflow::cli_sync::run_sync_with_options(true)?;
+            with_cli_git_cancellation(|_cancel| {
+                crate::workflow::cli_sync::run_sync_with_options(true)
+            })?;
             Ok(StartupMode::Handled)
         }
         [command] if is_help(command) => {

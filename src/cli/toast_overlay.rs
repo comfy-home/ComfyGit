@@ -5,29 +5,29 @@
 //
 // For details, see the LICENSE file in the repository root.
 
-//! Minimal TUI overlay that shows toast notifications for git commands
+//! Minimal overlay that shows toast notifications for git commands
 //! executed from the CLI. The command runs in a scoped background thread
-//! while a lightweight ratatui render loop on the main thread displays
-//! real-time toast updates. After the overlay exits, the terminal is
-//! restored to its original state.
+//! while a lightweight render loop on the main thread displays real-time
+//! toast updates. No alternate screen or raw mode is used — the action's
+//! stdout/stderr flow normally to the terminal, and toasts are rendered on
+//! top via cursor save/restore + direct buffer writes.
 
 use std::{
-    io::{self, Write, stdout},
+    io::{self, Write},
     sync::{Arc, Mutex},
     thread,
     time::{Duration, Instant},
 };
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEventKind, MouseButton, MouseEventKind},
+    cursor::{MoveTo, RestorePosition, SavePosition},
     execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+    style::{ResetColor, SetBackgroundColor, SetForegroundColor},
 };
-use ratatui::{Terminal, backend::CrosstermBackend, layout::Rect, widgets::WidgetRef};
+use ratatui::{buffer::Buffer, layout::Rect, widgets::WidgetRef};
 use ratatui_comfy_toaster::{
-    ToastBuilder, ToastEngine, ToastEngineBuilder, ToastMouseButton, ToastShortcut, ToastType,
-    ToastUpdate,
+    ToastBuilder, ToastEngine, ToastEngineBuilder, ToastType, ToastUpdate,
 };
 use tokio::sync::mpsc::UnboundedReceiver;
 
@@ -40,14 +40,82 @@ const TICK_INTERVAL: Duration = Duration::from_millis(50);
 /// the overlay (gives user time to read success toasts).
 const LINGER_DURATION: Duration = Duration::from_secs(3);
 
-/// Runs `action` in a scoped background thread while displaying a minimal
-/// toast overlay on the current thread. Returns the action's result.
+/// Render a ratatui `Buffer` to stdout as an overlay: save cursor, move to
+/// each cell position, write the cell content with styling, then restore
+/// cursor. Only writes cells that differ from `prev`.
+fn write_buffer_diff(prev: &Buffer, next: &Buffer) -> io::Result<()> {
+    let mut stdout = io::stdout();
+    execute!(stdout, SavePosition)?;
+    for (x, y, cell) in prev.diff_iter(next) {
+        execute!(stdout, MoveTo(x, y))?;
+        let style = cell.style();
+        if let Some(fg) = style.fg {
+            execute!(
+                stdout,
+                SetForegroundColor(ratatui_crossterm_color_to_crossterm(fg))
+            )?;
+        }
+        if let Some(bg) = style.bg {
+            execute!(
+                stdout,
+                SetBackgroundColor(ratatui_crossterm_color_to_crossterm(bg))
+            )?;
+        }
+        write!(stdout, "{}", cell.symbol())?;
+        execute!(stdout, ResetColor)?;
+    }
+    execute!(stdout, RestorePosition)?;
+    stdout.flush()
+}
+
+/// Convert a ratatui `Color` to a crossterm `Color`.
+fn ratatui_crossterm_color_to_crossterm(c: ratatui::style::Color) -> crossterm::style::Color {
+    use ratatui::style::Color;
+    match c {
+        Color::Reset => crossterm::style::Color::Reset,
+        Color::Black => crossterm::style::Color::Black,
+        Color::Red => crossterm::style::Color::DarkRed,
+        Color::Green => crossterm::style::Color::DarkGreen,
+        Color::Yellow => crossterm::style::Color::DarkYellow,
+        Color::Blue => crossterm::style::Color::DarkBlue,
+        Color::Magenta => crossterm::style::Color::DarkMagenta,
+        Color::Cyan => crossterm::style::Color::DarkCyan,
+        Color::Gray => crossterm::style::Color::Grey,
+        Color::DarkGray => crossterm::style::Color::DarkGrey,
+        Color::LightRed => crossterm::style::Color::Red,
+        Color::LightGreen => crossterm::style::Color::Green,
+        Color::LightYellow => crossterm::style::Color::Yellow,
+        Color::LightBlue => crossterm::style::Color::Blue,
+        Color::LightMagenta => crossterm::style::Color::Magenta,
+        Color::LightCyan => crossterm::style::Color::Cyan,
+        Color::White => crossterm::style::Color::White,
+        Color::Indexed(i) => crossterm::style::Color::AnsiValue(i),
+        Color::Rgb(r, g, b) => crossterm::style::Color::Rgb { r, g, b },
+    }
+}
+
+/// Clear a rectangular region of the terminal by overwriting with spaces.
+fn clear_region(area: Rect) -> io::Result<()> {
+    let mut stdout = io::stdout();
+    execute!(stdout, SavePosition)?;
+    for y in area.y..area.y + area.height {
+        execute!(stdout, MoveTo(area.x, y))?;
+        for _ in 0..area.width {
+            write!(stdout, " ")?;
+        }
+    }
+    execute!(stdout, RestorePosition)?;
+    stdout.flush()
+}
+
+/// Runs `action` in a scoped background thread while displaying toast
+/// notifications as a true overlay on the current terminal. Returns the
+/// action's result.
 ///
-/// Uses `thread::scope` so the action closure can borrow from the calling
-/// scope without needing `'static`. The overlay enters the alternate screen,
-/// drains git toast events, and renders them in real-time. After the action
-/// completes, the overlay lingers briefly so the user can read the final
-/// toast, then restores the terminal.
+/// Unlike a full-screen TUI, this does NOT use the alternate screen. The
+/// action's stdout/stderr flow normally to the terminal, and toasts are
+/// rendered on top using cursor save/restore + direct buffer writes.
+/// This means interactive prompts and command output remain visible.
 pub(crate) fn run_with_toast_overlay<T: Send>(
     mut rx: UnboundedReceiver<GitToastEvent>,
     action: impl FnOnce() -> Result<T> + Send,
@@ -57,13 +125,8 @@ pub(crate) fn run_with_toast_overlay<T: Send>(
     let action_done = Arc::new(Mutex::new(false));
     let action_done_clone = action_done.clone();
 
-    // Set up the terminal for the overlay on the main thread.
-    enable_raw_mode().context("failed to enable raw mode")?;
-    let mut stdout_handle = stdout();
-    execute!(stdout_handle, EnterAlternateScreen).context("failed to enter alternate screen")?;
-
-    let terminal_result = thread::scope(|scope| {
-        // Spawn the action in a scoped thread (can borrow from caller).
+    let overlay_result = thread::scope(|scope| {
+        // Spawn the action in a scoped thread.
         scope.spawn(move || {
             let result = action();
             if let Ok(mut done) = action_done_clone.lock() {
@@ -76,10 +139,10 @@ pub(crate) fn run_with_toast_overlay<T: Send>(
 
         // Run the overlay render loop on the main thread.
         (|| {
-            let mut terminal = Terminal::new(CrosstermBackend::new(stdout_handle))
-                .context("failed to create terminal")?;
+            let (w, h) = crossterm::terminal::size().unwrap_or((120, 40));
+            let area = Rect::new(0, 0, w, h);
 
-            let mut engine: ToastEngine<()> = ToastEngineBuilder::new(Rect::new(0, 0, 120, 40))
+            let mut engine: ToastEngine<()> = ToastEngineBuilder::new(area)
                 .default_duration(Duration::from_secs(3))
                 .default_progress_bar(true)
                 .build();
@@ -87,6 +150,8 @@ pub(crate) fn run_with_toast_overlay<T: Send>(
             let mut toast_ids: std::collections::HashMap<u64, u64> =
                 std::collections::HashMap::new();
             let mut action_completed_at: Option<Instant> = None;
+            let mut prev_buffer = Buffer::empty(area);
+            let mut last_toast_area = None::<Rect>;
 
             loop {
                 // Check if the action is done.
@@ -166,50 +231,17 @@ pub(crate) fn run_with_toast_overlay<T: Send>(
                 // Tick the toast engine (expire timed toasts).
                 engine.tick();
 
-                // Handle input events (non-blocking).
-                while event::poll(Duration::from_millis(0)).unwrap_or(false) {
-                    if let Ok(Event::Key(key)) = event::read()
-                        && key.kind == KeyEventKind::Press
-                    {
-                        match key.code {
-                            KeyCode::Enter
-                            | KeyCode::Esc
-                            | KeyCode::Char('q')
-                            | KeyCode::Char('Q')
-                                if engine.has_toast() =>
-                            {
-                                engine.handle_shortcut(ToastShortcut::Dismiss);
-                            }
-                            _ => {}
-                        }
-                    }
-                    if let Ok(Event::Mouse(mouse)) = event::read() {
-                        match mouse.kind {
-                            MouseEventKind::Down(MouseButton::Left) => {
-                                engine.handle_click(
-                                    mouse.column,
-                                    mouse.row,
-                                    ToastMouseButton::Left,
-                                );
-                            }
-                            MouseEventKind::Down(MouseButton::Right) => {
-                                engine.handle_click(
-                                    mouse.column,
-                                    mouse.row,
-                                    ToastMouseButton::Right,
-                                );
-                            }
-                            _ => {}
-                        }
-                    }
-                }
+                // Render toasts to a buffer and write the diff to stdout.
+                let mut next_buffer = Buffer::empty(area);
+                engine.set_area(area);
+                engine.render_ref(area, &mut next_buffer);
+                write_buffer_diff(&prev_buffer, &next_buffer)?;
+                prev_buffer = next_buffer;
 
-                // Render.
-                terminal.draw(|frame| {
-                    let area = frame.area();
-                    engine.set_area(area);
-                    engine.render_ref(area, frame.buffer_mut());
-                })?;
+                // Track toast area for cleanup on exit.
+                if engine.has_toast() {
+                    last_toast_area = Some(engine.toast_area());
+                }
 
                 // Check exit conditions.
                 if let Some(completed_at) = action_completed_at {
@@ -226,17 +258,16 @@ pub(crate) fn run_with_toast_overlay<T: Send>(
                 thread::sleep(TICK_INTERVAL);
             }
 
+            // Clear the toast area on exit.
+            if let Some(toast_area) = last_toast_area {
+                clear_region(toast_area)?;
+            }
+
             Ok::<(), anyhow::Error>(())
         })()
     });
 
-    // Restore terminal.
-    disable_raw_mode().context("failed to disable raw mode")?;
-    let mut stdout_restore = io::stdout();
-    execute!(stdout_restore, LeaveAlternateScreen).context("failed to leave alternate screen")?;
-    stdout_restore.flush().ok();
-
-    terminal_result?;
+    overlay_result?;
 
     // Get the action result from the shared slot.
     result_slot
