@@ -629,6 +629,7 @@ dependencies = [
  "ctrlc",
  "directories",
  "image",
+ "libc",
  "ratatui",
  "ratatui-comfy-tabs",
  "ratatui-comfy-text-engine",
