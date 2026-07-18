@@ -19,6 +19,7 @@ pub(crate) enum GitToastEventKind {
     },
     Finished {
         success: bool,
+        stderr: String,
     },
     TimedOut {
         timeout_secs: u64,
