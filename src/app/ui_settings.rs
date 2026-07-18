@@ -51,6 +51,7 @@ pub(crate) enum UiSettingsFocus {
     FooterContent,
     GitTimeout,
     GitCommandToasts,
+    CliToasts,
     TabSelectionFlashEnabled,
     TabSelectionFlashColor,
 }
@@ -110,6 +111,7 @@ impl UiSettingsState {
                 UiSettingsFocus::FooterContent,
                 UiSettingsFocus::GitTimeout,
                 UiSettingsFocus::GitCommandToasts,
+                UiSettingsFocus::CliToasts,
             ],
             UiSettingsTab::Tabs => vec![
                 UiSettingsFocus::TabSelectionFlashEnabled,
@@ -202,6 +204,7 @@ fn build_rows(tab: UiSettingsTab) -> Vec<UiSettingsRow> {
             UiSettingsRow::Cycle(UiSettingsFocus::FooterContent),
             UiSettingsRow::Cycle(UiSettingsFocus::GitTimeout),
             UiSettingsRow::Checkbox(UiSettingsFocus::GitCommandToasts),
+            UiSettingsRow::Checkbox(UiSettingsFocus::CliToasts),
             UiSettingsRow::Spacer(1),
             UiSettingsRow::Text,
         ],
@@ -360,6 +363,7 @@ fn checkbox_label(field: UiSettingsFocus) -> &'static str {
         UiSettingsFocus::FooterContent => "Footer content alignment",
         UiSettingsFocus::GitTimeout => "Git command timeout",
         UiSettingsFocus::GitCommandToasts => "Show git command toasts",
+        UiSettingsFocus::CliToasts => "Show CLI command toasts",
         UiSettingsFocus::TabSelectionFlashEnabled => "Tab selection flash",
         UiSettingsFocus::TabSelectionFlashColor => "Flash color",
     }
@@ -377,6 +381,7 @@ fn render_checkbox_row(
         UiSettingsFocus::ShowTabHints => app.config.ui.show_tab_hints,
         UiSettingsFocus::HideFooter => app.config.ui.hide_footer,
         UiSettingsFocus::GitCommandToasts => app.config.ui.show_git_command_toasts,
+        UiSettingsFocus::CliToasts => app.config.ui.show_cli_toasts,
         UiSettingsFocus::TabSelectionFlashEnabled => app.config.ui.tab_selection_flash_enabled,
         _ => false,
     };
@@ -588,6 +593,15 @@ fn toggle_focused_ui_settings_control(app: &mut App, delta: i32) -> Result<()> {
                 "Git command toasts enabled."
             } else {
                 "Git command toasts disabled."
+            });
+        }
+        UiSettingsFocus::CliToasts => {
+            app.config.ui.show_cli_toasts = !app.config.ui.show_cli_toasts;
+            app.config_store.save(&app.config)?;
+            app.status = StatusMessage::success(if app.config.ui.show_cli_toasts {
+                "CLI command toasts enabled."
+            } else {
+                "CLI command toasts disabled."
             });
         }
         UiSettingsFocus::TabSelectionFlashEnabled => {

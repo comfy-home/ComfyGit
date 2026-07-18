@@ -5,6 +5,8 @@
 //
 // For details, see the LICENSE file in the repository root.
 
+mod toast_overlay;
+
 use std::{
     cmp::Ordering,
     collections::HashSet,
@@ -99,8 +101,8 @@ fn ensure_cli_ctrl_c_handler() -> Result<()> {
     Ok(())
 }
 
-fn with_cli_git_cancellation<T>(
-    action: impl FnOnce(Option<GitCancellation>) -> Result<T>,
+fn with_cli_git_cancellation<T: Send>(
+    action: impl FnOnce(Option<GitCancellation>) -> Result<T> + Send,
 ) -> Result<T> {
     ensure_cli_ctrl_c_handler()?;
 
@@ -112,7 +114,17 @@ fn with_cli_git_cancellation<T>(
         *active = Some(cancel.clone());
     }
 
-    let result = action(Some(cancel.clone()));
+    // Check if CLI toast overlay is enabled.
+    let use_overlay = load_config()
+        .map(|cfg| cfg.ui.show_cli_toasts)
+        .unwrap_or(false);
+
+    let result = if use_overlay {
+        let rx = crate::git::init_git_toast_channel();
+        toast_overlay::run_with_toast_overlay(rx, || action(Some(cancel.clone())))
+    } else {
+        action(Some(cancel.clone()))
+    };
 
     if let Ok(mut active) = cli_git_cancellation_slot().lock() {
         *active = None;
@@ -188,11 +200,13 @@ fn dispatch_args(args: &[String]) -> Result<StartupMode> {
             Ok(StartupMode::Handled)
         }
         [command] if is_sync_command(command) => {
-            crate::workflow::cli_sync::run_sync()?;
+            with_cli_git_cancellation(|_cancel| crate::workflow::cli_sync::run_sync())?;
             Ok(StartupMode::Handled)
         }
         [command, flag] if is_sync_command(command) && is_sync_yes_flag(flag) => {
-            crate::workflow::cli_sync::run_sync_with_options(true)?;
+            with_cli_git_cancellation(|_cancel| {
+                crate::workflow::cli_sync::run_sync_with_options(true)
+            })?;
             Ok(StartupMode::Handled)
         }
         [command] if is_help(command) => {
