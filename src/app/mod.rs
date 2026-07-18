@@ -27,8 +27,8 @@ use crate::{
     changelog::write_changelog_markdown,
     config::{AppConfig, ConfigStore, FooterContent, IntegrationMode, ProjectConfig, ProjectType},
     git::{
-        GitCancellation, GitToastEvent, RepoActivitySummary,
-        collect_all_branch_git_scope_contexts, init_git_toast_channel,
+        GitCancellation, GitToastEvent, RepoActivitySummary, collect_all_branch_git_scope_contexts,
+        init_git_toast_channel,
     },
     tui::{
         HelpModal, OverviewTab, OverviewTileData, PixelLogo, ProjectEditDialog, ProjectEditFocus,
