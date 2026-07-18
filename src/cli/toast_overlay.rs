@@ -40,29 +40,48 @@ const TICK_INTERVAL: Duration = Duration::from_millis(50);
 /// the overlay (gives user time to read success toasts).
 const LINGER_DURATION: Duration = Duration::from_secs(3);
 
-/// Render a ratatui `Buffer` to stdout as an overlay: save cursor, move to
-/// each cell position, write the cell content with styling, then restore
-/// cursor. Only writes cells that differ from `prev`.
-fn write_buffer_diff(prev: &Buffer, next: &Buffer) -> io::Result<()> {
+/// Write all non-empty cells from `next` to stdout, and clear cells that were
+/// non-empty in `prev` but are now empty. Unlike a diff-based approach, this
+/// always re-paints active toast cells every tick — necessary because the
+/// action thread's output scrolls the terminal, invalidating previously
+/// written cells at fixed positions.
+fn write_buffer_full(prev: &Buffer, next: &Buffer) -> io::Result<()> {
     let mut stdout = io::stdout();
     execute!(stdout, SavePosition)?;
-    for (x, y, cell) in prev.diff_iter(next) {
-        execute!(stdout, MoveTo(x, y))?;
-        let style = cell.style();
-        if let Some(fg) = style.fg {
-            execute!(
-                stdout,
-                SetForegroundColor(ratatui_crossterm_color_to_crossterm(fg))
-            )?;
+    let area = next.area();
+    for y in area.y..area.y + area.height {
+        for x in area.x..area.x + area.width {
+            let next_cell = &next[(x, y)];
+            let prev_cell = &prev[(x, y)];
+            let next_empty = next_cell.symbol() == " ";
+            let prev_empty = prev_cell.symbol() == " ";
+            // Skip cells that are empty in both buffers.
+            if next_empty && prev_empty {
+                continue;
+            }
+            // Always write the cell (even if unchanged) because the
+            // terminal may have been scrolled by the action thread.
+            execute!(stdout, MoveTo(x, y))?;
+            if next_empty {
+                write!(stdout, " ")?;
+            } else {
+                let style = next_cell.style();
+                if let Some(fg) = style.fg {
+                    execute!(
+                        stdout,
+                        SetForegroundColor(ratatui_crossterm_color_to_crossterm(fg))
+                    )?;
+                }
+                if let Some(bg) = style.bg {
+                    execute!(
+                        stdout,
+                        SetBackgroundColor(ratatui_crossterm_color_to_crossterm(bg))
+                    )?;
+                }
+                write!(stdout, "{}", next_cell.symbol())?;
+                execute!(stdout, ResetColor)?;
+            }
         }
-        if let Some(bg) = style.bg {
-            execute!(
-                stdout,
-                SetBackgroundColor(ratatui_crossterm_color_to_crossterm(bg))
-            )?;
-        }
-        write!(stdout, "{}", cell.symbol())?;
-        execute!(stdout, ResetColor)?;
     }
     execute!(stdout, RestorePosition)?;
     stdout.flush()
@@ -231,11 +250,14 @@ pub(crate) fn run_with_toast_overlay<T: Send>(
                 // Tick the toast engine (expire timed toasts).
                 engine.tick();
 
-                // Render toasts to a buffer and write the diff to stdout.
+                // Render toasts to a buffer and write all cells to stdout.
+                // We always re-paint every non-empty cell (not just diffs)
+                // because the action thread's output scrolls the terminal,
+                // invalidating previously written toast cells.
                 let mut next_buffer = Buffer::empty(area);
                 engine.set_area(area);
                 engine.render_ref(area, &mut next_buffer);
-                write_buffer_diff(&prev_buffer, &next_buffer)?;
+                write_buffer_full(&prev_buffer, &next_buffer)?;
                 prev_buffer = next_buffer;
 
                 // Track toast area for cleanup on exit.
