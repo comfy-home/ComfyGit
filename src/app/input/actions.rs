@@ -1328,7 +1328,7 @@ impl App {
                     let toast_id = self.toaster.show_toast_with_id(builder);
                     self.git_toast_ids.insert(event.command_id, toast_id);
                 }
-                GitToastEventKind::Finished { success } => {
+                GitToastEventKind::Finished { success, stderr } => {
                     if let Some(toast_id) = self.git_toast_ids.remove(&event.command_id) {
                         if success {
                             self.toaster.update_toast_by_id(
@@ -1340,12 +1340,18 @@ impl App {
                                     .show_progress_bar(false),
                             );
                         } else {
+                            let trimmed = stderr.trim();
+                            let msg = if trimmed.is_empty() {
+                                "git: FAILED".to_string()
+                            } else {
+                                format!("git: FAILED\n{}", trimmed)
+                            };
                             self.toaster.update_toast_by_id(
                                 toast_id,
                                 ToastUpdate::new()
                                     .toast_type(ToastType::Error)
-                                    .message("git: FAILED")
-                                    .duration(Some(Duration::from_secs(5)))
+                                    .message(msg)
+                                    .keep_on(true)
                                     .show_progress_bar(false),
                             );
                         }
@@ -1358,7 +1364,7 @@ impl App {
                             ToastUpdate::new()
                                 .toast_type(ToastType::Error)
                                 .message(format!("git: TIMED OUT ({}s)", timeout_secs))
-                                .duration(Some(Duration::from_secs(5)))
+                                .keep_on(true)
                                 .show_progress_bar(false),
                         );
                     }
