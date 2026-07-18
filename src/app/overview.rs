@@ -11,6 +11,7 @@ use super::git_flow::{
     refresh_target_artifacts, stage_path_for_file, unstage_paths,
 };
 use super::*;
+use crate::app::background::RecentChangesLoadAction;
 use crate::changelog::{archive_changelog_markdown, sum_changelog_gen};
 use crate::{
     git::{
@@ -260,7 +261,9 @@ pub(super) fn ensure_dashboard_recent_changes(app: &mut App) {
         app.overview_recent_changes = None;
         app.overview_recent_error = None;
         match RecentChangesDialog::from_project(project) {
-            Ok(dialog) => app.overview_recent_changes = Some(dialog),
+            Ok(dialog) => {
+                app.overview_recent_changes = Some(dialog);
+            }
             Err(error) => app.overview_recent_error = Some(error.to_string()),
         }
     } else {
@@ -811,8 +814,14 @@ pub(super) fn select_dashboard_overview_scope(app: &mut App, scope_index: usize)
         crate::app::project_settings::invalidate_project_settings_state(app);
     }
     ensure_dashboard_recent_changes(app);
-    if let Some(dialog) = &mut app.overview_recent_changes {
-        dialog.select_scope(scope_index)?;
+    if let Some(dialog) = &app.overview_recent_changes
+        && dialog.selected_scope != scope_index
+        && !app.background_job_active
+    {
+        let _ = app.schedule_overview_recent_changes_action(
+            "Loading git history for the selected scope.",
+            RecentChangesLoadAction::SelectScope(scope_index),
+        );
     }
     Ok(())
 }

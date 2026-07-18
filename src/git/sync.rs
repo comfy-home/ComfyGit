@@ -4,12 +4,12 @@
 // Licensed under the ComfyGit License v1.2
 
 use anyhow::{Context, Result, bail};
-use std::process::Command;
 
 use crate::forge::{ForgeKind, detect_forge_from_remote_url};
 
 use super::{
     current_branch_with_cancel, git_remote_names, resolve_push_remote_name, run_git_checked,
+    run_git_with_cancel,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,15 +119,11 @@ pub fn check_mirror_sync(
         bail!("mirror sync check requires a checked-out branch, not a detached HEAD");
     }
 
-    let output = Command::new("git")
-        .current_dir(repo_root)
-        .args(["log", "--oneline", "-1", "--decorate"])
-        .output()
-        .context("failed to read latest commit decoration")?;
-    if !output.status.success() {
+    let output = run_git_with_cancel(repo_root, &["log", "--oneline", "-1", "--decorate"], None)?;
+    if !output.success {
         bail!("failed to read latest commit for mirror sync check");
     }
-    let head_line = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let head_line = output.stdout.trim().to_string();
     let gitlab_ref = format!("{gitlab_remote}/{branch}");
     let github_ref = format!("{github_remote}/{branch}");
 
@@ -158,17 +154,10 @@ pub fn push_mirror_sync(
 
     let mut lines = Vec::new();
     for remote in [&gitlab_remote, &github_remote] {
-        let output = Command::new("git")
-            .current_dir(repo_root)
-            .args(["push", remote, &branch])
-            .output()
+        let output = run_git_with_cancel(repo_root, &["push", remote, &branch], None)
             .with_context(|| format!("failed to push branch '{branch}' to remote '{remote}'"))?;
-        if !output.status.success() {
-            let combined = format!(
-                "{}{}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            );
+        if !output.success {
+            let combined = format!("{}{}", output.stdout, output.stderr);
             bail!(
                 "failed to push branch '{branch}' to remote '{remote}': {}",
                 combined.trim()

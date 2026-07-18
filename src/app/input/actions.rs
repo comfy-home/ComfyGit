@@ -11,7 +11,7 @@ use anyhow::{Result, anyhow, bail};
 use arboard::Clipboard;
 #[cfg(target_os = "linux")]
 use arboard::{LinuxClipboardKind, SetExtLinux};
-use ratatui_comfy_toaster::{ToastBuilder, ToastInteraction, ToastType};
+use ratatui_comfy_toaster::{ToastBuilder, ToastInteraction, ToastType, ToastUpdate};
 
 use crate::{
     changelog::{
@@ -21,7 +21,7 @@ use crate::{
     cli::{prepare_commit_rename, push_branch_force_with_lease, rename_commit_with_subject},
     config::{ProjectConfig, ProjectType},
     git::{
-        GitScopeContext, branches_containing_ref_with_cancel,
+        GitScopeContext, GitToastEventKind, branches_containing_ref_with_cancel,
         collect_all_branch_git_scope_contexts, current_branch_with_cancel,
         latest_local_tag_with_cancel, run_git,
     },
@@ -1086,9 +1086,14 @@ impl App {
             BackgroundJobOutput::RecentChanges {
                 dialog,
                 status_message,
+                is_overview,
             } => {
-                self.recent_changes_dialog = Some(dialog);
-                let _ = self.schedule_recent_changes_prefetch();
+                if is_overview {
+                    self.overview_recent_changes = Some(dialog);
+                } else {
+                    self.recent_changes_dialog = Some(dialog);
+                    let _ = self.schedule_recent_changes_prefetch();
+                }
                 if let Some(message) = status_message {
                     self.status = StatusMessage::info(message);
                 }
@@ -1210,7 +1215,32 @@ impl App {
         self.schedule_progress_job(
             " Loading Git Commits ",
             message,
-            BackgroundJobRequest::RecentChanges { dialog, action },
+            BackgroundJobRequest::RecentChanges {
+                dialog,
+                action,
+                is_overview: false,
+            },
+        )
+    }
+
+    pub(crate) fn schedule_overview_recent_changes_action(
+        &mut self,
+        message: impl Into<String>,
+        action: RecentChangesLoadAction,
+    ) -> Result<()> {
+        let dialog = self
+            .overview_recent_changes
+            .clone()
+            .ok_or_else(|| anyhow!("overview recent changes is not open"))?;
+
+        self.schedule_progress_job(
+            " Loading Git Commits ",
+            message,
+            BackgroundJobRequest::RecentChanges {
+                dialog,
+                action,
+                is_overview: true,
+            },
         )
     }
 
@@ -1265,12 +1295,94 @@ impl App {
 
     pub(crate) fn tick_ui_state(&mut self) -> bool {
         let had_toast = self.toaster.has_toast();
+        self.drain_git_toast_events();
         self.toaster.tick();
 
         had_toast
             || self.toaster.has_toast() != had_toast
             || overview::tick_dashboard_tile_rotation(self)
             || self.any_tab_selection_flash_active()
+    }
+
+    fn drain_git_toast_events(&mut self) {
+        if !self.config.ui.show_git_command_toasts {
+            if let Some(rx) = &mut self.git_toast_rx {
+                while rx.try_recv().is_ok() {}
+            }
+            self.git_toast_ids.clear();
+            return;
+        }
+
+        let Some(rx) = &mut self.git_toast_rx else {
+            return;
+        };
+
+        while let Ok(event) = rx.try_recv() {
+            match event.kind {
+                GitToastEventKind::Started { args, timeout_secs } => {
+                    let label = format!("git {}", args.join(" "));
+                    let builder = ToastBuilder::new(label.into())
+                        .toast_type(ToastType::Info)
+                        .duration(Duration::from_secs(timeout_secs))
+                        .show_progress_bar(true);
+                    let toast_id = self.toaster.show_toast_with_id(builder);
+                    self.git_toast_ids.insert(event.command_id, toast_id);
+                }
+                GitToastEventKind::Finished { success, stderr } => {
+                    if let Some(toast_id) = self.git_toast_ids.remove(&event.command_id) {
+                        if success {
+                            self.toaster.update_toast_by_id(
+                                toast_id,
+                                ToastUpdate::new()
+                                    .toast_type(ToastType::Success)
+                                    .message("git: SUCCESS")
+                                    .duration(Some(Duration::from_secs(2)))
+                                    .show_progress_bar(false),
+                            );
+                        } else {
+                            let trimmed = stderr.trim();
+                            let msg = if trimmed.is_empty() {
+                                "git: FAILED".to_string()
+                            } else {
+                                format!("git: FAILED\n{}", trimmed)
+                            };
+                            self.toaster.update_toast_by_id(
+                                toast_id,
+                                ToastUpdate::new()
+                                    .toast_type(ToastType::Error)
+                                    .message(msg)
+                                    .keep_on(true)
+                                    .show_progress_bar(false),
+                            );
+                        }
+                    }
+                }
+                GitToastEventKind::TimedOut { timeout_secs } => {
+                    if let Some(toast_id) = self.git_toast_ids.remove(&event.command_id) {
+                        self.toaster.update_toast_by_id(
+                            toast_id,
+                            ToastUpdate::new()
+                                .toast_type(ToastType::Error)
+                                .message(format!("git: TIMED OUT ({}s)", timeout_secs))
+                                .keep_on(true)
+                                .show_progress_bar(false),
+                        );
+                    }
+                }
+                GitToastEventKind::Cancelled => {
+                    if let Some(toast_id) = self.git_toast_ids.remove(&event.command_id) {
+                        self.toaster.update_toast_by_id(
+                            toast_id,
+                            ToastUpdate::new()
+                                .toast_type(ToastType::Warning)
+                                .message("git: CANCELLED")
+                                .duration(Some(Duration::from_secs(2)))
+                                .show_progress_bar(false),
+                        );
+                    }
+                }
+            }
+        }
     }
 
     pub(crate) fn sync_dashboard_overview_after_repo_change(&mut self) {

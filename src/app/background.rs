@@ -78,6 +78,7 @@ pub(crate) enum BackgroundJobRequest {
     RecentChanges {
         dialog: RecentChangesDialog,
         action: RecentChangesLoadAction,
+        is_overview: bool,
     },
     OpenDashboardChangelogPreview {
         project: ProjectConfig,
@@ -133,6 +134,7 @@ pub(crate) enum BackgroundJobOutput {
     RecentChanges {
         dialog: RecentChangesDialog,
         status_message: Option<String>,
+        is_overview: bool,
     },
     RecentChangesPrefetch {
         project_name: String,
@@ -250,6 +252,7 @@ impl BackgroundJobRequest {
 pub(crate) enum RecentChangesLoadAction {
     RefreshCurrentScope,
     RotateScope(isize),
+    SelectScope(usize),
     SwitchTab(RecentChangesTab),
 }
 
@@ -953,7 +956,11 @@ async fn run_background_job(
                 warnings,
             })
         }
-        BackgroundJobRequest::RecentChanges { dialog, action } => {
+        BackgroundJobRequest::RecentChanges {
+            dialog,
+            action,
+            is_overview,
+        } => {
             let (dialog, status_message) = run_blocking_job(move || {
                 apply_recent_changes_background_action(dialog, action, Some(cancel))
             })
@@ -961,6 +968,7 @@ async fn run_background_job(
             Ok(BackgroundJobOutput::RecentChanges {
                 dialog,
                 status_message,
+                is_overview,
             })
         }
         BackgroundJobRequest::OpenDashboardChangelogPreview {
@@ -1120,6 +1128,10 @@ pub(crate) fn apply_recent_changes_background_action(
         }
         RecentChangesLoadAction::RotateScope(delta) => {
             dialog.rotate_scope_cancellable(delta, cancel)?;
+            None
+        }
+        RecentChangesLoadAction::SelectScope(scope_index) => {
+            dialog.select_scope_cancellable(scope_index, cancel)?;
             None
         }
         RecentChangesLoadAction::SwitchTab(tab) => {

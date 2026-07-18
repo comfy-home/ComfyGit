@@ -5,6 +5,8 @@
 //
 // For details, see the LICENSE file in the repository root.
 
+mod toast_overlay;
+
 use std::{
     cmp::Ordering,
     collections::HashSet,
@@ -99,8 +101,8 @@ fn ensure_cli_ctrl_c_handler() -> Result<()> {
     Ok(())
 }
 
-fn with_cli_git_cancellation<T>(
-    action: impl FnOnce(Option<GitCancellation>) -> Result<T>,
+fn with_cli_git_cancellation<T: Send>(
+    action: impl FnOnce(Option<GitCancellation>) -> Result<T> + Send,
 ) -> Result<T> {
     ensure_cli_ctrl_c_handler()?;
 
@@ -112,7 +114,17 @@ fn with_cli_git_cancellation<T>(
         *active = Some(cancel.clone());
     }
 
-    let result = action(Some(cancel.clone()));
+    // Check if CLI toast overlay is enabled.
+    let use_overlay = load_config()
+        .map(|cfg| cfg.ui.show_cli_toasts)
+        .unwrap_or(false);
+
+    let result = if use_overlay {
+        let rx = crate::git::init_git_toast_channel();
+        toast_overlay::run_with_toast_overlay(rx, || action(Some(cancel.clone())))
+    } else {
+        action(Some(cancel.clone()))
+    };
 
     if let Ok(mut active) = cli_git_cancellation_slot().lock() {
         *active = None;
@@ -188,11 +200,13 @@ fn dispatch_args(args: &[String]) -> Result<StartupMode> {
             Ok(StartupMode::Handled)
         }
         [command] if is_sync_command(command) => {
-            crate::workflow::cli_sync::run_sync()?;
+            with_cli_git_cancellation(|_cancel| crate::workflow::cli_sync::run_sync())?;
             Ok(StartupMode::Handled)
         }
         [command, flag] if is_sync_command(command) && is_sync_yes_flag(flag) => {
-            crate::workflow::cli_sync::run_sync_with_options(true)?;
+            with_cli_git_cancellation(|_cancel| {
+                crate::workflow::cli_sync::run_sync_with_options(true)
+            })?;
             Ok(StartupMode::Handled)
         }
         [command] if is_help(command) => {
@@ -244,12 +258,14 @@ fn dispatch_args(args: &[String]) -> Result<StartupMode> {
             let repo_root = current_git_repo_root(&cwd)?;
             let forge = crate::forge::require_forge_for_repo(&repo_root)?;
             let custom_main_branch = find_repo_custom_main_branch(&repo_root);
+            let comfygitflow_enabled = find_repo_comfygitflow_enabled(&repo_root);
             with_cli_git_cancellation(|cancel| {
                 run_pr(
                     &repo_root,
                     forge,
                     false,
                     custom_main_branch.as_deref(),
+                    comfygitflow_enabled,
                     cancel,
                 )
             })?;
@@ -260,12 +276,14 @@ fn dispatch_args(args: &[String]) -> Result<StartupMode> {
             let repo_root = current_git_repo_root(&cwd)?;
             let forge = crate::forge::require_forge_for_repo(&repo_root)?;
             let custom_main_branch = find_repo_custom_main_branch(&repo_root);
+            let comfygitflow_enabled = find_repo_comfygitflow_enabled(&repo_root);
             with_cli_git_cancellation(|cancel| {
                 run_pr(
                     &repo_root,
                     forge,
                     true,
                     custom_main_branch.as_deref(),
+                    comfygitflow_enabled,
                     cancel,
                 )
             })?;
@@ -369,11 +387,11 @@ fn dispatch_args(args: &[String]) -> Result<StartupMode> {
             Ok(StartupMode::Handled)
         }
         [command, action] if is_bump_command(command) => {
-            run_bump(action, None)?;
+            run_bump(action, None, false)?;
             Ok(StartupMode::Handled)
         }
         [command, action, option] if is_bump_command(command) => {
-            run_bump(action, Some(option))?;
+            run_bump(action, Some(option), false)?;
             Ok(StartupMode::Handled)
         }
         [command] if is_new_command(command) => {
@@ -386,6 +404,22 @@ fn dispatch_args(args: &[String]) -> Result<StartupMode> {
         }
         [command, action, option] if is_new_command(command) && action == "alt" => {
             crate::git::run_new_alt(Some(option))?;
+            Ok(StartupMode::Handled)
+        }
+        [command, action] if is_new_command(command) && action == "sub" => {
+            crate::git::run_new_sub(None)?;
+            Ok(StartupMode::Handled)
+        }
+        [command, action, option] if is_new_command(command) && action == "sub" => {
+            crate::git::run_new_sub(Some(option))?;
+            Ok(StartupMode::Handled)
+        }
+        [command, action] if is_new_command(command) && action == "ot" => {
+            crate::git::run_new_ot(None)?;
+            Ok(StartupMode::Handled)
+        }
+        [command, action, option] if is_new_command(command) && action == "ot" => {
+            crate::git::run_new_ot(Some(option))?;
             Ok(StartupMode::Handled)
         }
         [command, action] if is_new_command(command) => {
@@ -975,6 +1009,7 @@ fn print_branch_status() -> Result<()> {
             &context.repo_root,
             &context.current_branch,
             context.main_branch_name.as_deref(),
+            context.comfygitflow_enabled,
             cancel,
         )
     })?;
@@ -991,6 +1026,7 @@ fn run_branch_up() -> Result<()> {
             &context.repo_root,
             &context.current_branch,
             context.main_branch_name.as_deref(),
+            context.comfygitflow_enabled,
             cancel,
         )
     })?;
@@ -1031,6 +1067,7 @@ fn run_branch_done_command() -> Result<()> {
         run_branch_done(
             &context.repo_root,
             context.main_branch_name.as_deref(),
+            context.comfygitflow_enabled,
             cancel,
         )
     })
@@ -1052,6 +1089,7 @@ struct ActiveBranchCliContext {
     project_name: String,
     repo_root: String,
     main_branch_name: Option<String>,
+    comfygitflow_enabled: bool,
     current_branch: String,
 }
 
@@ -1078,6 +1116,7 @@ fn load_active_branch_cli_context() -> Result<ActiveBranchCliContext> {
         project_name: project.name.clone(),
         repo_root: context.repo_root.clone(),
         main_branch_name: context.main_branch_name.clone(),
+        comfygitflow_enabled: project.comfygitflow_enabled,
         current_branch,
     })
 }
@@ -1129,7 +1168,11 @@ fn print_project_version(lookup: &str) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn run_bump(action_name: &str, option_name: Option<&str>) -> Result<()> {
+pub(crate) fn run_bump(
+    action_name: &str,
+    option_name: Option<&str>,
+    skip_non_main_check: bool,
+) -> Result<()> {
     let config = load_config()?;
     let cwd =
         best_effort_canonicalize(&env::current_dir().context("failed to read current directory")?);
@@ -1181,7 +1224,7 @@ pub(crate) fn run_bump(action_name: &str, option_name: Option<&str>) -> Result<(
                 &git_contexts,
                 &affected_indexes,
             )?;
-            if !non_main_repo_states.is_empty() {
+            if !non_main_repo_states.is_empty() && !skip_non_main_check {
                 println!(
                     "{}Just to check: Are you aware you are currently on a NON-MAIN branch?{}",
                     ANSI_CYAN, ANSI_RESET
@@ -2877,13 +2920,14 @@ fn load_branch_diagram(
     current_branch: &str,
     custom_main_branch: Option<&str>,
 ) -> Result<Option<BranchDiagram>> {
-    load_branch_diagram_with_cancel(repo_root, current_branch, custom_main_branch, None)
+    load_branch_diagram_with_cancel(repo_root, current_branch, custom_main_branch, false, None)
 }
 
 fn load_branch_diagram_with_cancel(
     repo_root: &str,
     current_branch: &str,
     custom_main_branch: Option<&str>,
+    comfygitflow_enabled: bool,
     cancel: Option<GitCancellation>,
 ) -> Result<Option<BranchDiagram>> {
     let Some(tree) = build_branch_tree_data_with_cancel(
@@ -2891,6 +2935,7 @@ fn load_branch_diagram_with_cancel(
         current_branch,
         custom_main_branch,
         true,
+        comfygitflow_enabled,
         cancel.clone(),
     )?
     else {
@@ -2942,7 +2987,7 @@ fn load_branch_diagram_with_cancel(
             continue;
         }
 
-        if crate::git::is_alt_branch(current_branch)
+        if crate::git::is_deviation_branch(current_branch)
             && let Some(segment) = path
                 .iter()
                 .position(|segment| segment.branch.name.eq_ignore_ascii_case(current_branch))
@@ -2974,6 +3019,7 @@ fn load_branch_lineage_with_cancel(
     repo_root: &str,
     current_branch: &str,
     custom_main_branch: Option<&str>,
+    comfygitflow_enabled: bool,
     cancel: Option<GitCancellation>,
 ) -> Result<Option<BranchLineage>> {
     let Some(tree) = build_branch_tree_data_with_cancel(
@@ -2981,6 +3027,7 @@ fn load_branch_lineage_with_cancel(
         current_branch,
         custom_main_branch,
         false,
+        comfygitflow_enabled,
         cancel,
     )?
     else {
@@ -2998,6 +3045,7 @@ fn build_branch_tree_data_with_cancel(
     current_branch: &str,
     custom_main_branch: Option<&str>,
     focus_descendant_from_root: bool,
+    comfygitflow_enabled: bool,
     cancel: Option<GitCancellation>,
 ) -> Result<Option<BranchTreeData>> {
     let mut branches = list_local_branch_refs_with_cancel(repo_root, cancel.clone())?;
@@ -3007,12 +3055,21 @@ fn build_branch_tree_data_with_cancel(
 
     let root_index = select_root_branch_index(&branches, current_branch, custom_main_branch);
     let root_branch = branches.remove(root_index);
-    populate_root_distances_with_cancel(
-        repo_root,
-        &root_branch.refname,
-        &mut branches,
-        cancel.clone(),
-    )?;
+    if comfygitflow_enabled {
+        populate_root_distances_from_naming(
+            repo_root,
+            &root_branch.refname,
+            &mut branches,
+            cancel.clone(),
+        )?;
+    } else {
+        populate_root_distances_with_cancel(
+            repo_root,
+            &root_branch.refname,
+            &mut branches,
+            cancel.clone(),
+        )?;
+    }
 
     let current_ref = if root_branch.name.eq_ignore_ascii_case(current_branch) {
         if focus_descendant_from_root {
@@ -3046,7 +3103,7 @@ fn build_branch_tree_data_with_cancel(
         .chain(std::iter::once(current_ref.name.clone()))
         .collect::<Vec<_>>();
     let alt_sibling_lookups =
-        crate::git::alt_sibling_branch_names(current_branch, &all_branch_names)
+        crate::git::deviation_sibling_branch_names(current_branch, &all_branch_names)
             .into_iter()
             .map(|branch| normalize_lookup(&branch))
             .collect::<std::collections::HashSet<_>>();
@@ -3074,9 +3131,9 @@ fn build_branch_tree_data_with_cancel(
         path.push(current_ref);
     }
 
-    if crate::git::is_alt_branch(current_branch)
+    if crate::git::is_deviation_branch(current_branch)
         && let Some(parent_name) =
-            crate::git::alt_merge_parent_branch(current_branch, &all_branch_names)
+            crate::git::deviation_merge_parent_branch(current_branch, &all_branch_names)
         && !root_branch.name.eq_ignore_ascii_case(&parent_name)
         && path
             .iter()
@@ -3147,6 +3204,37 @@ fn populate_root_distances_with_cancel(
     Ok(())
 }
 
+fn populate_root_distances_from_naming(
+    repo_root: &str,
+    root_ref: &str,
+    branches: &mut [BranchRef],
+    cancel: Option<GitCancellation>,
+) -> Result<()> {
+    let mut fallback_indices = Vec::new();
+    for (i, branch) in branches.iter_mut().enumerate() {
+        if let Some(distance) = crate::git::comfygitflow_root_distance(&branch.name) {
+            branch.root_distance = distance;
+        } else {
+            fallback_indices.push(i);
+        }
+    }
+
+    for i in fallback_indices {
+        let range = format!("{}..{}", root_ref, branches[i].refname);
+        let output = run_git_checked_owned_with_cancel(
+            repo_root,
+            vec!["rev-list".to_string(), "--count".to_string(), range.clone()],
+            cancel.clone(),
+        )?;
+        branches[i].root_distance = output
+            .trim()
+            .parse::<usize>()
+            .with_context(|| format!("failed to parse git ancestry distance for {}", range))?;
+    }
+
+    Ok(())
+}
+
 fn sort_branch_path(path: &mut [BranchRef], current_branch: &str) {
     path.sort_by(|left, right| {
         let left_is_current = left.name.eq_ignore_ascii_case(current_branch);
@@ -3164,28 +3252,51 @@ fn resolve_parent_branch_name(
     current_branch: &str,
     custom_main_branch: Option<&str>,
 ) -> Result<String> {
-    resolve_parent_branch_name_with_cancel(repo_root, current_branch, custom_main_branch, None)
+    resolve_parent_branch_name_with_cancel(
+        repo_root,
+        current_branch,
+        custom_main_branch,
+        false,
+        None,
+    )
 }
 
 fn resolve_parent_branch_name_with_cancel(
     repo_root: &str,
     current_branch: &str,
     custom_main_branch: Option<&str>,
+    comfygitflow_enabled: bool,
     cancel: Option<GitCancellation>,
 ) -> Result<String> {
     let existing_branches = list_local_branch_refs_with_cancel(repo_root, cancel.clone())?
         .into_iter()
         .map(|branch| branch.name)
         .collect::<Vec<_>>();
+
+    if comfygitflow_enabled
+        && let Some(parent) = crate::git::comfygitflow_resolve_parent_branch(
+            current_branch,
+            &existing_branches,
+            custom_main_branch,
+        )
+    {
+        return Ok(parent);
+    }
+
     if let Some(parent_branch) =
-        crate::git::alt_merge_parent_branch(current_branch, &existing_branches)
+        crate::git::deviation_merge_parent_branch(current_branch, &existing_branches)
     {
         return Ok(parent_branch);
     }
 
-    let lineage =
-        load_branch_lineage_with_cancel(repo_root, current_branch, custom_main_branch, cancel)?
-            .ok_or_else(|| anyhow!("no local branches are available in this repository"))?;
+    let lineage = load_branch_lineage_with_cancel(
+        repo_root,
+        current_branch,
+        custom_main_branch,
+        comfygitflow_enabled,
+        cancel,
+    )?
+    .ok_or_else(|| anyhow!("no local branches are available in this repository"))?;
     if lineage.root.name.eq_ignore_ascii_case(current_branch) {
         bail!("current branch is already the main branch")
     }
@@ -3480,7 +3591,7 @@ fn load_config() -> Result<AppConfig> {
     ConfigStore::locate()?.load()
 }
 
-fn find_repo_custom_main_branch(repo_root: &str) -> Option<String> {
+pub(crate) fn find_repo_custom_main_branch(repo_root: &str) -> Option<String> {
     let canonical_repo_root = best_effort_canonicalize(Path::new(repo_root));
     let config = load_config().ok()?;
 
@@ -3503,6 +3614,33 @@ fn find_repo_custom_main_branch(repo_root: &str) -> Option<String> {
     }
 
     None
+}
+
+fn find_repo_comfygitflow_enabled(repo_root: &str) -> bool {
+    let canonical_repo_root = best_effort_canonicalize(Path::new(repo_root));
+    let config = load_config().ok();
+
+    let Some(config) = config else {
+        return false;
+    };
+
+    for project in &config.projects {
+        if let Some(repo) = project.repo.as_ref()
+            && best_effort_canonicalize(&repo_root_path(repo)) == canonical_repo_root
+        {
+            return project.comfygitflow_enabled;
+        }
+
+        for branch in &project.branches {
+            if let Some(repo) = branch.repo.as_ref()
+                && best_effort_canonicalize(&repo_root_path(repo)) == canonical_repo_root
+            {
+                return project.comfygitflow_enabled;
+            }
+        }
+    }
+
+    false
 }
 
 pub(crate) fn mirror_sync_after_merge_for_repo(

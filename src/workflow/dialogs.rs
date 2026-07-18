@@ -85,7 +85,10 @@ pub(crate) fn load_recent_change_range_with_cancel(
         let range = format!("{}..HEAD", tag);
         let output = run_git_checked_owned(
             repo_root,
-            build_log_args(["log", "--oneline", "--graph", range.as_str()], &pathspecs),
+            build_log_args(
+                ["log", "--oneline", "--graph", "-n", "200", range.as_str()],
+                &pathspecs,
+            ),
             cancel.clone(),
         )?;
         let lines = split_output_lines(&output);
@@ -278,6 +281,14 @@ impl RecentChangesDialog {
     }
 
     pub(crate) fn select_scope(&mut self, scope_index: usize) -> Result<()> {
+        self.select_scope_cancellable(scope_index, None)
+    }
+
+    pub(crate) fn select_scope_cancellable(
+        &mut self,
+        scope_index: usize,
+        cancel: Option<GitCancellation>,
+    ) -> Result<()> {
         if self.scopes.is_empty() {
             self.selected_scope = 0;
             return Ok(());
@@ -289,7 +300,7 @@ impl RecentChangesDialog {
         }
 
         self.selected_scope = next_scope;
-        self.reload_selected_scope(true, None)
+        self.reload_selected_scope(true, cancel)
     }
 
     fn reload_selected_scope(

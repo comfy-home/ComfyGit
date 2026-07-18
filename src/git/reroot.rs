@@ -162,7 +162,7 @@ fn derive_source_branch_candidates(
     candidates
 }
 
-fn semver_release_line_branch_from_dev_branch(branch_name: &str) -> Option<String> {
+pub(crate) fn semver_release_line_branch_from_dev_branch(branch_name: &str) -> Option<String> {
     let normalized = branch_name.trim().trim_start_matches('v');
     let normalized = normalized
         .split_once("--")

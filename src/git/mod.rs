@@ -9,6 +9,7 @@ mod pr;
 mod reroot;
 mod status;
 mod sync;
+mod toast_events;
 
 pub(crate) use alt::*;
 pub(crate) use branch::*;
@@ -21,6 +22,10 @@ pub(crate) use pr::*;
 pub(crate) use reroot::*;
 pub(crate) use status::*;
 pub(crate) use sync::*;
+pub(crate) use toast_events::{
+    GitToastEvent, GitToastEventKind, init_git_toast_channel, next_git_command_id,
+    send_git_toast_event,
+};
 
 /// Git-related utilities for interacting with repositories, collecting activity summaries, and managing tags.
 use std::{
@@ -92,9 +97,21 @@ pub(crate) fn ensure_local_branch_published_and_in_sync_with_cancel(
             )
         })?;
 
+    crate::debug::log(
+        "branch-sync-check",
+        &format!("{branch_role} '{branch_name}' upstream='{upstream_ref}'"),
+    );
+
     fetch_remote_for_upstream_with_cancel(repo_root, &upstream_ref, cancel.clone())?;
     let (ahead_count, behind_count) =
         branch_divergence_counts_with_cancel(repo_root, branch_name, &upstream_ref, cancel)?;
+
+    crate::debug::log(
+        "branch-sync-check",
+        &format!(
+            "{branch_role} '{branch_name}' vs '{upstream_ref}': ahead={ahead_count} behind={behind_count}"
+        ),
+    );
 
     match (ahead_count, behind_count) {
         (0, 0) => Ok(upstream_ref),
@@ -280,6 +297,13 @@ pub(crate) fn branch_divergence_counts_with_cancel(
         &["rev-list", "--left-right", "--count", &comparison],
         cancel,
     )?;
+    crate::debug::log(
+        "branch-sync-check",
+        &format!(
+            "rev-list --left-right --count {comparison} => {:?}",
+            output.trim()
+        ),
+    );
     parse_left_right_counts(&output)
 }
 
@@ -888,6 +912,18 @@ pub(crate) fn run_git_with_cancel(
     args: &[&str],
     cancel: Option<GitCancellation>,
 ) -> Result<GitOutput> {
+    let started = crate::debug::log_git_start(repo_root, args);
+    let timeout = crate::debug::git_default_timeout();
+
+    let command_id = next_git_command_id();
+    send_git_toast_event(GitToastEvent {
+        command_id,
+        kind: GitToastEventKind::Started {
+            args: args.iter().map(|s| s.to_string()).collect(),
+            timeout_secs: timeout.as_secs(),
+        },
+    });
+
     let mut child = Command::new("git")
         .arg("-C")
         .arg(repo_root)
@@ -901,6 +937,11 @@ pub(crate) fn run_git_with_cancel(
         if cancel.as_ref().is_some_and(GitCancellation::is_cancelled) {
             let _ = child.kill();
             let _ = child.wait_with_output();
+            crate::debug::log_git_end(repo_root, args, started, false);
+            send_git_toast_event(GitToastEvent {
+                command_id,
+                kind: GitToastEventKind::Cancelled,
+            });
             bail!("git {:?} cancelled in {}", args, repo_root);
         }
 
@@ -911,11 +952,38 @@ pub(crate) fn run_git_with_cancel(
             let output = child
                 .wait_with_output()
                 .with_context(|| format!("failed to collect git output in {}", repo_root))?;
+            let success = status.success();
+            crate::debug::log_git_end(repo_root, args, started, success);
+            send_git_toast_event(GitToastEvent {
+                command_id,
+                kind: GitToastEventKind::Finished {
+                    success,
+                    stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+                },
+            });
             return Ok(GitOutput {
-                success: status.success(),
+                success,
                 stdout: String::from_utf8_lossy(&output.stdout).to_string(),
                 stderr: String::from_utf8_lossy(&output.stderr).to_string(),
             });
+        }
+
+        if started.elapsed() >= timeout {
+            let _ = child.kill();
+            let _ = child.wait_with_output();
+            crate::debug::log_git_timeout(repo_root, args, timeout.as_secs());
+            send_git_toast_event(GitToastEvent {
+                command_id,
+                kind: GitToastEventKind::TimedOut {
+                    timeout_secs: timeout.as_secs(),
+                },
+            });
+            bail!(
+                "git {:?} timed out after {}s in {}",
+                args,
+                timeout.as_secs(),
+                repo_root
+            );
         }
 
         std::thread::sleep(Duration::from_millis(100));

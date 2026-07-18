@@ -9,6 +9,7 @@ mod app;
 mod changelog;
 mod cli;
 mod config;
+mod debug;
 mod forge;
 mod ghub;
 mod git;
@@ -18,6 +19,17 @@ mod tui;
 mod workflow;
 
 pub fn run_entrypoint() -> anyhow::Result<()> {
+    debug::init();
+    if debug::any_debug_enabled() {
+        debug::log(
+            "init",
+            &format!(
+                "debug enabled: GIT_DEBUG={} TUI_DEBUG={}",
+                debug::git_debug_enabled(),
+                debug::tui_debug_enabled(),
+            ),
+        );
+    }
     match cli::dispatch()? {
         cli::StartupMode::Handled => Ok(()),
         cli::StartupMode::LaunchTui => app::run(),

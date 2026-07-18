@@ -5,10 +5,54 @@
 //
 // For details, see the LICENSE file in the repository root.
 
-//! Alternative (`alt`) development branches — `cg new alt`.
+//! Deviation branches — `cg new alt`, `cg new sub`, and `cg new ot`.
 //!
-//! Numeric alts (`v0.1.5-dev-alt1`) are created from a dev branch.
-//! Letter alts (`v0.1.5-dev-alt2A`) are created from a numeric alt branch.
+//! Alternative (`alt`) branches use `-alt` marker: `v0.1.5-dev-alt1`, `v0.1.5-dev-alt2A`.
+//! Sub-development (`SUB`) branches use `-SUB` marker: `v0.1.5-dev-SUB1`, `v0.1.5-dev-SUB1A`.
+//! Off-topic (`OT`) branches use `-OT` marker: `v0.1.5-dev-OT1`, `v0.1.5-dev-OT1A`.
+//!
+//! All follow the same numeric → letter pattern and can be nested cross-type:
+//! `v0.1.5-dev-SUB1-alt1`, `v0.1.5-dev-alt1-OT1A`, etc.
+//!
+//! `OT` branches can also be created from release-line (`x`) branches:
+//! `0.37.x-OT1`, `0.37.x-OT1A`.
+
+// ---------------------------------------------------------------------------
+// Deviation kind descriptor
+// ---------------------------------------------------------------------------
+
+struct DeviationKind {
+    marker: &'static str,
+    label: &'static str,
+    command: &'static str,
+}
+
+const ALT_KIND: DeviationKind = DeviationKind {
+    marker: "-alt",
+    label: "alt",
+    command: "alt",
+};
+
+const SUB_KIND: DeviationKind = DeviationKind {
+    marker: "-SUB",
+    label: "SUB",
+    command: "sub",
+};
+
+const OT_KIND: DeviationKind = DeviationKind {
+    marker: "-OT",
+    label: "OT",
+    command: "ot",
+};
+
+const DEVIATION_MARKERS: [&str; 3] = ["-alt", "-SUB", "-OT"];
+
+pub(crate) fn find_rightmost_marker(base: &str) -> Option<(usize, &'static str)> {
+    DEVIATION_MARKERS
+        .iter()
+        .filter_map(|&marker| base.rfind(marker).map(|pos| (pos, marker)))
+        .max_by_key(|(pos, _)| *pos)
+}
 
 use std::{
     env,
@@ -43,6 +87,18 @@ use crate::{
 // ---------------------------------------------------------------------------
 
 pub(crate) fn run_new_alt(option_name: Option<&str>) -> Result<()> {
+    run_new_deviation(option_name, &ALT_KIND)
+}
+
+pub(crate) fn run_new_sub(option_name: Option<&str>) -> Result<()> {
+    run_new_deviation(option_name, &SUB_KIND)
+}
+
+pub(crate) fn run_new_ot(option_name: Option<&str>) -> Result<()> {
+    run_new_deviation(option_name, &OT_KIND)
+}
+
+fn run_new_deviation(option_name: Option<&str>, kind: &DeviationKind) -> Result<()> {
     let config = ConfigStore::locate()?.load()?;
     let cwd =
         best_effort_canonicalize(&env::current_dir().context("failed to read current directory")?);
@@ -51,15 +107,16 @@ pub(crate) fn run_new_alt(option_name: Option<&str>) -> Result<()> {
     let repo_root = current_git_repo_root(&cwd)?;
     let current_branch = current_branch_with_cancel(&repo_root, None)?;
 
-    validate_alt_creation_source(&current_branch)?;
+    validate_deviation_creation_source(&current_branch, kind)?;
 
     let synced_work = match option_name.map(str::trim) {
-        None => prompt_alt_work_type_selection(&current_branch)?,
+        None => prompt_deviation_work_type_selection(&current_branch, kind)?,
         Some("1") => true,
         Some("2") => false,
         Some(other) => {
             bail!(
-                "cg new alt option must be 1 (Synced Work) or 2 (Local Work); got '{}'",
+                "cg new {} option must be 1 (Synced Work) or 2 (Local Work); got '{}'",
+                kind.command,
                 other
             )
         }
@@ -67,18 +124,20 @@ pub(crate) fn run_new_alt(option_name: Option<&str>) -> Result<()> {
 
     if synced_work && !project.integration_mode.is_forge_enabled() {
         bail!(
-            "cg new alt 1 (Synced Work) is only available for GitHub-enabled projects; \
-             use option 2 for local-only branches"
+            "cg new {} 1 (Synced Work) is only available for GitHub-enabled projects; \
+             use option 2 for local-only branches",
+            kind.command
         );
     }
 
-    if !prompt_alt_position_continue(&project.name, &current_branch)? {
+    if !prompt_deviation_position_continue(&project.name, &current_branch)? {
         bail!("Cancelled by user");
     }
 
     let existing_branches = list_local_branch_names(&repo_root)?;
-    let branch_options = suggest_alt_branch_name_options(&current_branch, &existing_branches)?;
-    let branch_name = prompt_alt_branch_name(&branch_options)?;
+    let branch_options =
+        suggest_deviation_branch_name_options(&current_branch, &existing_branches, kind)?;
+    let branch_name = prompt_deviation_branch_name(&branch_options, kind)?;
 
     create_branch_and_switch(&repo_root, &branch_name)?;
 
@@ -105,66 +164,78 @@ pub(crate) fn run_new_alt(option_name: Option<&str>) -> Result<()> {
 /// When `existing_branches` is provided, prefers the first candidate that already exists
 /// locally (e.g. falls back from `v0.9.1-dev--or-this-way` to `v0.9.1-dev` when only the
 /// latter exists). When empty, returns the preferred (first) candidate.
-pub(crate) fn alt_merge_parent_branch(
-    current_branch: &str,
-    existing_branches: &[String],
-) -> Option<String> {
-    let candidates = alt_merge_parent_candidates(current_branch, existing_branches)?;
-    pick_existing_branch_candidate(&candidates, existing_branches)
-}
-
-/// Dev branch that this alt branch is an alternative for (`v0.1.5-dev-alt2` → `v0.1.5-dev`).
-pub(crate) fn alt_lineage_dev_base(branch: &str) -> Option<String> {
-    let (base, _) = split_specific_suffix(branch);
-    if let Some(dev_parent) = parse_numeric_alt_dev_parent(&base) {
-        return Some(dev_parent);
-    }
-
-    let (numeric_base, _) = parse_letter_alt_base(&base)?;
-    parse_numeric_alt_dev_parent(&numeric_base)
-}
-
-pub(crate) fn is_alt_branch(branch: &str) -> bool {
-    alt_lineage_dev_base(branch).is_some()
+#[cfg(test)]
+fn alt_merge_parent_branch(current_branch: &str, existing_branches: &[String]) -> Option<String> {
+    deviation_merge_parent_branch(current_branch, existing_branches)
 }
 
 /// Other local alt branches exploring alternatives on the same dev branch.
-pub(crate) fn alt_sibling_branch_names(
-    current_branch: &str,
-    existing_branches: &[String],
-) -> Vec<String> {
-    let Some(dev_base) = alt_lineage_dev_base(current_branch) else {
-        return Vec::new();
-    };
-
-    let mut siblings = existing_branches
-        .iter()
-        .filter(|branch| {
-            !branch.eq_ignore_ascii_case(current_branch)
-                && is_alt_branch(branch)
-                && alt_lineage_dev_base(branch).as_deref() == Some(dev_base.as_str())
-        })
-        .cloned()
-        .collect::<Vec<_>>();
-    siblings.sort_by_cached_key(|branch| branch.to_ascii_lowercase());
-    siblings
+#[cfg(test)]
+fn alt_sibling_branch_names(current_branch: &str, existing_branches: &[String]) -> Vec<String> {
+    deviation_sibling_branch_names(current_branch, existing_branches)
 }
 
-fn alt_merge_parent_candidates(
+// ---------------------------------------------------------------------------
+// Generalized deviation API (handles both alt and SUB, including cross-type nesting)
+// ---------------------------------------------------------------------------
+
+/// Dev branch that any deviation branch (alt or SUB, possibly nested) originates from.
+/// `v0.1.5-dev-alt2` → `v0.1.5-dev`, `v0.1.5-dev-SUB1-alt1` → `v0.1.5-dev`.
+pub(crate) fn deviation_lineage_dev_base(branch: &str) -> Option<String> {
+    let (base, _) = split_specific_suffix(branch);
+    strip_to_dev_base(&base)
+}
+
+/// True if the branch is any kind of deviation (alt or SUB, including nested).
+pub(crate) fn is_deviation_branch(branch: &str) -> bool {
+    deviation_lineage_dev_base(branch).is_some()
+}
+
+/// When `current_branch` is any deviation branch, returns the branch it should merge into.
+/// Handles alt, SUB, and cross-type nesting (e.g. `v0.1.5-dev-SUB1-alt1` → `v0.1.5-dev-SUB1`).
+pub(crate) fn deviation_merge_parent_branch(
+    current_branch: &str,
+    existing_branches: &[String],
+) -> Option<String> {
+    let candidates = deviation_merge_parent_candidates(current_branch, existing_branches)?;
+    pick_existing_branch_candidate(&candidates, existing_branches)
+}
+
+fn deviation_merge_parent_candidates(
     current_branch: &str,
     existing_branches: &[String],
 ) -> Option<Vec<String>> {
     let (base, specific_suffix) = split_specific_suffix(current_branch);
+    let (pos, marker) = find_rightmost_marker(&base)?;
+
+    let suffix = &base[pos + marker.len()..];
+    let digit_len = suffix.chars().take_while(|ch| ch.is_ascii_digit()).count();
+    if digit_len == 0 {
+        return None;
+    }
+    let rest = &suffix[digit_len..];
+    if !rest.is_empty() && !rest.chars().all(|ch| ch.is_ascii_uppercase()) {
+        return None;
+    }
+
+    let parent_base = &base[..pos];
+    if !is_valid_deviation_root(parent_base) {
+        return None;
+    }
+
     let mut candidates = Vec::new();
 
-    if let Some((numeric_base, _letter)) = parse_letter_alt_base(&base) {
+    if !rest.is_empty() {
+        // Letter deviation: parent is the numeric deviation base
+        let numeric_base = &base[..pos + marker.len() + digit_len];
         push_parent_branch_candidates(
             &mut candidates,
-            &numeric_base,
+            numeric_base,
             specific_suffix.as_deref(),
             existing_branches,
         );
-        if let Some(dev_parent) = parse_numeric_alt_dev_parent(&numeric_base) {
+        // Also try the dev parent of the numeric base
+        if let Some(dev_parent) = parse_numeric_deviation_dev_parent(numeric_base, marker) {
             push_parent_branch_candidates(
                 &mut candidates,
                 &dev_parent,
@@ -172,18 +243,39 @@ fn alt_merge_parent_candidates(
                 existing_branches,
             );
         }
-    } else if let Some(dev_parent) = parse_numeric_alt_dev_parent(&base) {
+    } else {
+        // Numeric deviation: parent is the branch before this marker
         push_parent_branch_candidates(
             &mut candidates,
-            &dev_parent,
+            parent_base,
             specific_suffix.as_deref(),
             existing_branches,
         );
-    } else {
-        return None;
     }
 
     dedup_branch_candidates(candidates)
+}
+
+/// Other local deviation branches (alt or SUB) sharing the same dev base.
+pub(crate) fn deviation_sibling_branch_names(
+    current_branch: &str,
+    existing_branches: &[String],
+) -> Vec<String> {
+    let Some(dev_base) = deviation_lineage_dev_base(current_branch) else {
+        return Vec::new();
+    };
+
+    let mut siblings = existing_branches
+        .iter()
+        .filter(|branch| {
+            !branch.eq_ignore_ascii_case(current_branch)
+                && is_deviation_branch(branch)
+                && deviation_lineage_dev_base(branch).as_deref() == Some(dev_base.as_str())
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    siblings.sort_by_cached_key(|branch| branch.to_ascii_lowercase());
+    siblings
 }
 
 fn push_parent_branch_candidates(
@@ -262,32 +354,42 @@ fn branch_exists(existing_branches: &[String], candidate: &str) -> bool {
 // Branch naming
 // ---------------------------------------------------------------------------
 
-fn validate_alt_creation_source(current_branch: &str) -> Result<()> {
-    match classify_alt_source(current_branch)? {
-        AltSourceKind::DevBranch | AltSourceKind::NumericAlt | AltSourceKind::LetterAlt => Ok(()),
+fn validate_deviation_creation_source(current_branch: &str, kind: &DeviationKind) -> Result<()> {
+    let (base, _) = split_specific_suffix(current_branch);
+    if !(base.contains("-dev") || kind.command == "ot" && base.ends_with(".x")) {
+        bail!(
+            "cg new {} can only be run from a dev branch or an existing deviation branch; \
+             current branch is '{}'",
+            kind.command,
+            current_branch
+        )
     }
+    Ok(())
 }
 
-fn suggest_alt_branch_name_options(
+fn suggest_deviation_branch_name_options(
     current_branch: &str,
     existing_branches: &[String],
+    kind: &DeviationKind,
 ) -> Result<Vec<BranchNameOption>> {
     let (base, specific_suffix) = split_specific_suffix(current_branch);
-    let next_base = match classify_alt_source(current_branch)? {
-        AltSourceKind::DevBranch => {
+    let next_base = match classify_deviation_source(&base, kind)? {
+        DeviationSourceKind::DevBranch => {
             let dev_base = base;
-            let next_number = next_numeric_alt_number(&dev_base, existing_branches);
-            format!("{}-alt{}", dev_base, next_number)
+            let next_number = next_numeric_deviation_number(&dev_base, existing_branches, kind);
+            format!("{}{}{}", dev_base, kind.marker, next_number)
         }
-        AltSourceKind::NumericAlt => {
+        DeviationSourceKind::NumericDeviation => {
             let numeric_base = base;
-            let next_letter = next_letter_alt_suffix(&numeric_base, existing_branches)?;
+            let next_letter = next_letter_deviation_suffix(&numeric_base, existing_branches, kind)?;
             format!("{}{}", numeric_base, next_letter)
         }
-        AltSourceKind::LetterAlt => {
-            let (numeric_base, _) = parse_letter_alt_base(&base)
-                .ok_or_else(|| anyhow::anyhow!("invalid letter alt branch '{}'", current_branch))?;
-            let next_letter = next_letter_alt_suffix(&numeric_base, existing_branches)?;
+        DeviationSourceKind::LetterDeviation => {
+            let (numeric_base, _) =
+                parse_letter_deviation_base(&base, kind.marker).ok_or_else(|| {
+                    anyhow::anyhow!("invalid letter {} branch '{}'", kind.label, current_branch)
+                })?;
+            let next_letter = next_letter_deviation_suffix(&numeric_base, existing_branches, kind)?;
             format!("{}{}", numeric_base, next_letter)
         }
     };
@@ -301,46 +403,42 @@ fn suggest_alt_branch_name_options(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AltSourceKind {
+enum DeviationSourceKind {
     DevBranch,
-    NumericAlt,
-    LetterAlt,
+    NumericDeviation,
+    LetterDeviation,
 }
 
-fn classify_alt_source(current_branch: &str) -> Result<AltSourceKind> {
-    let (base, _) = split_specific_suffix(current_branch);
-
-    if parse_letter_alt_base(&base).is_some() {
-        return Ok(AltSourceKind::LetterAlt);
+fn classify_deviation_source(base: &str, kind: &DeviationKind) -> Result<DeviationSourceKind> {
+    if parse_letter_deviation_base(base, kind.marker).is_some() {
+        return Ok(DeviationSourceKind::LetterDeviation);
     }
 
-    if parse_numeric_alt_dev_parent(&base).is_some() {
-        return Ok(AltSourceKind::NumericAlt);
+    if parse_numeric_deviation_dev_parent(base, kind.marker).is_some() {
+        return Ok(DeviationSourceKind::NumericDeviation);
     }
 
-    if is_dev_branch_without_alt(&base) {
-        return Ok(AltSourceKind::DevBranch);
+    if base.contains("-dev") || (kind.command == "ot" && base.ends_with(".x")) {
+        return Ok(DeviationSourceKind::DevBranch);
     }
 
     bail!(
-        "cg new alt can only be run from a dev branch or an existing alt branch; \
-         current branch is '{}'",
-        current_branch
+        "cg new {} can only be run from a dev branch or an existing {} branch; \
+         current branch base is '{}'",
+        kind.command,
+        kind.label,
+        base
     )
 }
 
-fn is_dev_branch_without_alt(base: &str) -> bool {
-    base.contains("-dev") && !base.contains("-alt")
-}
-
-fn parse_numeric_alt_dev_parent(base: &str) -> Option<String> {
-    let alt_index = base.rfind("-alt")?;
-    let dev_parent = base[..alt_index].trim();
-    if !is_dev_branch_without_alt(dev_parent) {
+fn parse_numeric_deviation_dev_parent(base: &str, marker: &str) -> Option<String> {
+    let marker_index = base.rfind(marker)?;
+    let dev_parent = base[..marker_index].trim();
+    if !dev_parent.contains("-dev") {
         return None;
     }
 
-    let suffix = &base[alt_index + 4..];
+    let suffix = &base[marker_index + marker.len()..];
     if suffix.is_empty() || !suffix.chars().all(|ch| ch.is_ascii_digit()) {
         return None;
     }
@@ -348,14 +446,14 @@ fn parse_numeric_alt_dev_parent(base: &str) -> Option<String> {
     Some(dev_parent.to_string())
 }
 
-fn parse_letter_alt_base(base: &str) -> Option<(String, char)> {
-    let alt_index = base.rfind("-alt")?;
-    let dev_parent = base[..alt_index].trim();
+fn parse_letter_deviation_base(base: &str, marker: &str) -> Option<(String, char)> {
+    let marker_index = base.rfind(marker)?;
+    let dev_parent = base[..marker_index].trim();
     if !dev_parent.contains("-dev") {
         return None;
     }
 
-    let suffix = &base[alt_index + 4..];
+    let suffix = &base[marker_index + marker.len()..];
     let digit_len = suffix.chars().take_while(|ch| ch.is_ascii_digit()).count();
     if digit_len == 0 {
         return None;
@@ -366,23 +464,56 @@ fn parse_letter_alt_base(base: &str) -> Option<(String, char)> {
         return None;
     }
 
-    let numeric_base = base[..alt_index + 4 + digit_len].to_string();
+    let numeric_base = base[..marker_index + marker.len() + digit_len].to_string();
     let letter = letters.chars().last()?;
     Some((numeric_base, letter))
 }
 
-fn next_numeric_alt_number(dev_base: &str, existing_branches: &[String]) -> u32 {
+fn is_valid_deviation_root(branch: &str) -> bool {
+    branch.contains("-dev") || branch.ends_with(".x")
+}
+
+fn strip_to_dev_base(base: &str) -> Option<String> {
+    let (pos, marker) = find_rightmost_marker(base)?;
+    let suffix = &base[pos + marker.len()..];
+    let digit_len = suffix.chars().take_while(|ch| ch.is_ascii_digit()).count();
+    if digit_len == 0 {
+        return None;
+    }
+    let rest = &suffix[digit_len..];
+    if !rest.is_empty() && !rest.chars().all(|ch| ch.is_ascii_uppercase()) {
+        return None;
+    }
+    let parent = &base[..pos];
+    if !is_valid_deviation_root(parent) {
+        return None;
+    }
+    if find_rightmost_marker(parent).is_none() {
+        return Some(parent.to_string());
+    }
+    strip_to_dev_base(parent)
+}
+
+fn next_numeric_deviation_number(
+    dev_base: &str,
+    existing_branches: &[String],
+    kind: &DeviationKind,
+) -> u32 {
     let max_number = existing_branches
         .iter()
-        .filter_map(|branch| numeric_alt_number_for_dev(branch, dev_base))
+        .filter_map(|branch| numeric_deviation_number_for_dev(branch, dev_base, kind))
         .max()
         .unwrap_or(0);
     max_number + 1
 }
 
-fn numeric_alt_number_for_dev(branch: &str, dev_base: &str) -> Option<u32> {
+fn numeric_deviation_number_for_dev(
+    branch: &str,
+    dev_base: &str,
+    kind: &DeviationKind,
+) -> Option<u32> {
     let (base, _) = split_specific_suffix(branch);
-    let suffix = base.strip_prefix(&format!("{dev_base}-alt"))?;
+    let suffix = base.strip_prefix(&format!("{dev_base}{}", kind.marker))?;
     if suffix.is_empty() {
         return None;
     }
@@ -400,24 +531,37 @@ fn numeric_alt_number_for_dev(branch: &str, dev_base: &str) -> Option<u32> {
     suffix[..digit_len].parse().ok()
 }
 
-fn next_letter_alt_suffix(numeric_base: &str, existing_branches: &[String]) -> Result<char> {
+fn next_letter_deviation_suffix(
+    numeric_base: &str,
+    existing_branches: &[String],
+    kind: &DeviationKind,
+) -> Result<char> {
     let max_letter = existing_branches
         .iter()
-        .filter_map(|branch| letter_alt_suffix_for_numeric(branch, numeric_base))
+        .filter_map(|branch| letter_deviation_suffix_for_numeric(branch, numeric_base, kind))
         .max();
 
     match max_letter {
         None => Ok('A'),
         Some(letter) if letter < 'Z' => Ok(((letter as u8) + 1) as char),
         Some('Z') => bail!(
-            "all letter alt branches A-Z already exist for '{}'",
+            "all letter {} branches A-Z already exist for '{}'",
+            kind.label,
             numeric_base
         ),
-        Some(_) => bail!("invalid letter alt suffix state for '{}'", numeric_base),
+        Some(_) => bail!(
+            "invalid letter {} suffix state for '{}'",
+            kind.label,
+            numeric_base
+        ),
     }
 }
 
-fn letter_alt_suffix_for_numeric(branch: &str, numeric_base: &str) -> Option<char> {
+fn letter_deviation_suffix_for_numeric(
+    branch: &str,
+    numeric_base: &str,
+    _kind: &DeviationKind,
+) -> Option<char> {
     let (base, _) = split_specific_suffix(branch);
     if !base.starts_with(numeric_base) {
         return None;
@@ -493,18 +637,21 @@ fn resolve_remote_spec_for_repo(
 // Wizards
 // ---------------------------------------------------------------------------
 
-const ALT_WORK_OPTIONS: [(&str, &str); 2] = [
+const DEVIATION_WORK_OPTIONS: [(&str, &str); 2] = [
     ("1", "Synced Work"),
     ("2", "Local Work (will not push to remote now)"),
 ];
 
-fn prompt_alt_work_type_selection(current_branch: &str) -> Result<bool> {
+fn prompt_deviation_work_type_selection(
+    current_branch: &str,
+    _kind: &DeviationKind,
+) -> Result<bool> {
     let mut selected = 0usize;
     let mut rendered_lines = 0usize;
     let raw_mode = RawModeGuard::enter()?;
 
     loop {
-        render_alt_work_type_picker(current_branch, selected, &mut rendered_lines)?;
+        render_deviation_work_type_picker(current_branch, selected, &mut rendered_lines)?;
 
         let Event::Key(key) = event::read().context("failed to read key event")? else {
             continue;
@@ -522,21 +669,21 @@ fn prompt_alt_work_type_selection(current_branch: &str) -> Result<bool> {
             KeyCode::Up | KeyCode::BackTab => {
                 selected = selected
                     .checked_sub(1)
-                    .unwrap_or(ALT_WORK_OPTIONS.len() - 1);
+                    .unwrap_or(DEVIATION_WORK_OPTIONS.len() - 1);
             }
             KeyCode::Down | KeyCode::Tab => {
-                selected = (selected + 1) % ALT_WORK_OPTIONS.len();
+                selected = (selected + 1) % DEVIATION_WORK_OPTIONS.len();
             }
             KeyCode::Char(c) if c.is_ascii_digit() => {
                 if let Some(index) = c.to_digit(10).and_then(|d| d.checked_sub(1)) {
                     let index = index as usize;
-                    if index < ALT_WORK_OPTIONS.len() {
+                    if index < DEVIATION_WORK_OPTIONS.len() {
                         selected = index;
                     }
                 }
             }
             KeyCode::Enter => {
-                let synced = ALT_WORK_OPTIONS[selected].0 == "1";
+                let synced = DEVIATION_WORK_OPTIONS[selected].0 == "1";
                 drop(raw_mode);
                 println!();
                 return Ok(synced);
@@ -546,7 +693,7 @@ fn prompt_alt_work_type_selection(current_branch: &str) -> Result<bool> {
     }
 }
 
-fn render_alt_work_type_picker(
+fn render_deviation_work_type_picker(
     current_branch: &str,
     selected: usize,
     rendered_lines: &mut usize,
@@ -560,10 +707,10 @@ fn render_alt_work_type_picker(
             MoveToColumn(0),
             Clear(ClearType::FromCursorDown)
         )
-        .context("failed to redraw alt work type picker")?;
+        .context("failed to redraw work type picker")?;
     }
 
-    queue!(stdout, MoveToColumn(0), Print("\r\n")).context("render alt work type: blank 1")?;
+    queue!(stdout, MoveToColumn(0), Print("\r\n")).context("render work type: blank 1")?;
     queue!(
         stdout,
         MoveToColumn(0),
@@ -571,8 +718,8 @@ fn render_alt_work_type_picker(
         Print("Use Up/Down or Tab to select, then press Enter.\r\n"),
         ResetColor
     )
-    .context("render alt work type: hint")?;
-    queue!(stdout, MoveToColumn(0), Print("\r\n")).context("render alt work type: blank 2")?;
+    .context("render work type: hint")?;
+    queue!(stdout, MoveToColumn(0), Print("\r\n")).context("render work type: blank 2")?;
     queue!(
         stdout,
         MoveToColumn(0),
@@ -582,8 +729,8 @@ fn render_alt_work_type_picker(
         ResetColor,
         Print("\r\n")
     )
-    .context("render alt work type: branch")?;
-    queue!(stdout, MoveToColumn(0), Print("\r\n")).context("render alt work type: blank 3")?;
+    .context("render work type: branch")?;
+    queue!(stdout, MoveToColumn(0), Print("\r\n")).context("render work type: blank 3")?;
     queue!(
         stdout,
         MoveToColumn(0),
@@ -591,10 +738,10 @@ fn render_alt_work_type_picker(
         Print("What would you like to do?\r\n"),
         ResetColor
     )
-    .context("render alt work type: question")?;
-    queue!(stdout, MoveToColumn(0), Print("\r\n")).context("render alt work type: blank 4")?;
+    .context("render work type: question")?;
+    queue!(stdout, MoveToColumn(0), Print("\r\n")).context("render work type: blank 4")?;
 
-    for (index, (_, label)) in ALT_WORK_OPTIONS.iter().enumerate() {
+    for (index, (_, label)) in DEVIATION_WORK_OPTIONS.iter().enumerate() {
         let marker = if index == selected { ">" } else { " " };
         let color = if index == selected {
             Color::Yellow
@@ -608,18 +755,15 @@ fn render_alt_work_type_picker(
             Print(format!("{} {}. {}\r\n", marker, index + 1, label)),
             ResetColor
         )
-        .context("render alt work type: option")?;
+        .context("render work type: option")?;
     }
-    queue!(stdout, MoveToColumn(0), Print("\r\n"))
-        .context("render alt work type: trailing blank")?;
-    stdout
-        .flush()
-        .context("failed to flush alt work type picker")?;
-    *rendered_lines = 8 + ALT_WORK_OPTIONS.len();
+    queue!(stdout, MoveToColumn(0), Print("\r\n")).context("render work type: trailing blank")?;
+    stdout.flush().context("failed to flush work type picker")?;
+    *rendered_lines = 8 + DEVIATION_WORK_OPTIONS.len();
     Ok(())
 }
 
-fn prompt_alt_position_continue(project_name: &str, current_branch: &str) -> Result<bool> {
+fn prompt_deviation_position_continue(project_name: &str, current_branch: &str) -> Result<bool> {
     println!();
     println!("You are here:");
     println!("  {} -> {}", project_name, current_branch);
@@ -645,9 +789,12 @@ fn prompt_confirm_default_yes(prompt: &str) -> Result<bool> {
     }
 }
 
-fn prompt_alt_branch_name(options: &[BranchNameOption]) -> Result<String> {
+fn prompt_deviation_branch_name(
+    options: &[BranchNameOption],
+    kind: &DeviationKind,
+) -> Result<String> {
     if options.is_empty() {
-        bail!("alt branch name options are unavailable")
+        bail!("{} branch name options are unavailable", kind.label)
     }
 
     let mut selected = 0usize;
@@ -655,7 +802,7 @@ fn prompt_alt_branch_name(options: &[BranchNameOption]) -> Result<String> {
     let raw_mode = RawModeGuard::enter()?;
 
     loop {
-        render_alt_branch_name_picker(options, selected, &mut rendered_lines)?;
+        render_deviation_branch_name_picker(options, selected, &mut rendered_lines, kind)?;
 
         let Event::Key(key) = event::read().context("failed to read branch name selection")? else {
             continue;
@@ -686,7 +833,7 @@ fn prompt_alt_branch_name(options: &[BranchNameOption]) -> Result<String> {
                 drop(raw_mode);
                 println!();
                 let input = if option.requires_input() {
-                    Some(prompt_alt_branch_name_input(option.input_label())?)
+                    Some(prompt_deviation_branch_name_input(option.input_label())?)
                 } else {
                     None
                 };
@@ -697,10 +844,11 @@ fn prompt_alt_branch_name(options: &[BranchNameOption]) -> Result<String> {
     }
 }
 
-fn render_alt_branch_name_picker(
+fn render_deviation_branch_name_picker(
     options: &[BranchNameOption],
     selected: usize,
     rendered_lines: &mut usize,
+    kind: &DeviationKind,
 ) -> Result<()> {
     let mut stdout = io::stdout();
 
@@ -711,26 +859,29 @@ fn render_alt_branch_name_picker(
             MoveToColumn(0),
             Clear(ClearType::FromCursorDown)
         )
-        .context("failed to redraw alt branch name picker")?;
+        .context("failed to redraw branch name picker")?;
     }
 
-    queue!(stdout, MoveToColumn(0), Print("\r\n")).context("render alt name: blank 1")?;
+    queue!(stdout, MoveToColumn(0), Print("\r\n")).context("render name: blank 1")?;
     queue!(
         stdout,
         MoveToColumn(0),
         Print("----------------------------------------\r\n")
     )
-    .context("render alt name: separator")?;
-    queue!(stdout, MoveToColumn(0), Print("\r\n")).context("render alt name: blank 2")?;
+    .context("render name: separator")?;
+    queue!(stdout, MoveToColumn(0), Print("\r\n")).context("render name: blank 2")?;
     queue!(
         stdout,
         MoveToColumn(0),
         SetForegroundColor(Color::Cyan),
-        Print("Please choose a name for the alt branch:\r\n"),
+        Print(format!(
+            "Please choose a name for the {} branch:\r\n",
+            kind.label
+        )),
         ResetColor
     )
-    .context("render alt name: question")?;
-    queue!(stdout, MoveToColumn(0), Print("\r\n")).context("render alt name: blank 3")?;
+    .context("render name: question")?;
+    queue!(stdout, MoveToColumn(0), Print("\r\n")).context("render name: blank 3")?;
     queue!(
         stdout,
         MoveToColumn(0),
@@ -738,8 +889,8 @@ fn render_alt_branch_name_picker(
         Print("Use Up/Down or Tab to select, then press Enter.\r\n"),
         ResetColor
     )
-    .context("render alt name: hint")?;
-    queue!(stdout, MoveToColumn(0), Print("\r\n")).context("render alt name: blank 4")?;
+    .context("render name: hint")?;
+    queue!(stdout, MoveToColumn(0), Print("\r\n")).context("render name: blank 4")?;
 
     for (index, option) in options.iter().enumerate() {
         let marker = if index == selected { ">" } else { " " };
@@ -760,17 +911,17 @@ fn render_alt_branch_name_picker(
             )),
             ResetColor
         )
-        .context("render alt name: option")?;
+        .context("render name: option")?;
     }
-    queue!(stdout, MoveToColumn(0), Print("\r\n")).context("render alt name: trailing blank")?;
+    queue!(stdout, MoveToColumn(0), Print("\r\n")).context("render name: trailing blank")?;
     stdout
         .flush()
-        .context("failed to flush alt branch name picker")?;
+        .context("failed to flush branch name picker")?;
     *rendered_lines = 6 + options.len();
     Ok(())
 }
 
-fn prompt_alt_branch_name_input(label: &str) -> Result<String> {
+fn prompt_deviation_branch_name_input(label: &str) -> Result<String> {
     print!("{label}: ");
     io::stdout()
         .flush()
@@ -905,30 +1056,260 @@ mod tests {
             "v0.1.5-dev-alt2".to_string(),
             "v0.1.5-dev-alt2A".to_string(),
         ];
-        assert_eq!(next_numeric_alt_number("v0.1.5-dev", &existing), 3);
+        assert_eq!(
+            next_numeric_deviation_number("v0.1.5-dev", &existing, &ALT_KIND),
+            3
+        );
     }
 
     #[test]
     fn next_letter_alt_suffix_starts_at_a_then_increments() {
         let existing = vec!["v0.1.5-dev-alt2A".to_string()];
         assert_eq!(
-            next_letter_alt_suffix("v0.1.5-dev-alt2", &existing).expect("next letter"),
+            next_letter_deviation_suffix("v0.1.5-dev-alt2", &existing, &ALT_KIND)
+                .expect("next letter"),
             'B'
         );
     }
 
     #[test]
     fn suggest_alt_branch_name_options_from_dev_branch() {
-        let options = suggest_alt_branch_name_options("v0.1.5-dev", &[]).expect("suggest options");
+        let options = suggest_deviation_branch_name_options("v0.1.5-dev", &[], &ALT_KIND)
+            .expect("suggest options");
         assert_eq!(options.len(), 3);
         assert_eq!(options[0].preview(), "v0.1.5-dev-alt1");
     }
 
     #[test]
     fn suggest_alt_branch_name_options_from_numeric_alt() {
-        let options =
-            suggest_alt_branch_name_options("v0.1.5-dev-alt2", &[]).expect("suggest options");
+        let options = suggest_deviation_branch_name_options("v0.1.5-dev-alt2", &[], &ALT_KIND)
+            .expect("suggest options");
         assert_eq!(options[0].preview(), "v0.1.5-dev-alt2A");
+    }
+
+    #[test]
+    fn sub_merge_parent_branch_returns_dev_for_numeric_sub() {
+        let existing = vec!["v0.1.5-dev".to_string()];
+        assert_eq!(
+            deviation_merge_parent_branch("v0.1.5-dev-SUB1", &existing).as_deref(),
+            Some("v0.1.5-dev")
+        );
+    }
+
+    #[test]
+    fn sub_merge_parent_branch_returns_numeric_sub_for_letter_sub() {
+        let existing = vec!["v0.1.5-dev-SUB1".to_string(), "v0.1.5-dev".to_string()];
+        assert_eq!(
+            deviation_merge_parent_branch("v0.1.5-dev-SUB1A", &existing).as_deref(),
+            Some("v0.1.5-dev-SUB1")
+        );
+    }
+
+    #[test]
+    fn sub_sibling_branch_names_lists_other_subs_on_same_dev_branch() {
+        let existing = vec![
+            "v0.9.1-dev".to_string(),
+            "v0.9.1-dev-SUB1".to_string(),
+            "v0.9.1-dev-SUB2".to_string(),
+            "v0.9.1-dev-SUB3".to_string(),
+        ];
+        let siblings = deviation_sibling_branch_names("v0.9.1-dev-SUB2", &existing);
+        assert_eq!(
+            siblings,
+            vec!["v0.9.1-dev-SUB1".to_string(), "v0.9.1-dev-SUB3".to_string(),]
+        );
+    }
+
+    #[test]
+    fn is_deviation_branch_recognizes_both_alt_and_sub() {
+        assert!(is_deviation_branch("v0.1.5-dev-alt1"));
+        assert!(is_deviation_branch("v0.1.5-dev-alt2B"));
+        assert!(is_deviation_branch("v0.1.5-dev-SUB1"));
+        assert!(is_deviation_branch("v0.1.5-dev-SUB1A"));
+        assert!(!is_deviation_branch("v0.1.5-dev"));
+        assert!(!is_deviation_branch("main"));
+    }
+
+    #[test]
+    fn deviation_merge_parent_cross_type_alt_from_sub() {
+        let existing = vec!["v0.1.5-dev".to_string(), "v0.1.5-dev-SUB1".to_string()];
+        assert_eq!(
+            deviation_merge_parent_branch("v0.1.5-dev-SUB1-alt1", &existing).as_deref(),
+            Some("v0.1.5-dev-SUB1")
+        );
+    }
+
+    #[test]
+    fn deviation_merge_parent_cross_type_sub_from_alt() {
+        let existing = vec!["v0.1.5-dev".to_string(), "v0.1.5-dev-alt1".to_string()];
+        assert_eq!(
+            deviation_merge_parent_branch("v0.1.5-dev-alt1-SUB1", &existing).as_deref(),
+            Some("v0.1.5-dev-alt1")
+        );
+    }
+
+    #[test]
+    fn deviation_merge_parent_deeply_nested() {
+        let existing = vec![
+            "v0.1.5-dev".to_string(),
+            "v0.1.5-dev-SUB1".to_string(),
+            "v0.1.5-dev-SUB1-alt1".to_string(),
+        ];
+        assert_eq!(
+            deviation_merge_parent_branch("v0.1.5-dev-SUB1-alt1-SUB1", &existing).as_deref(),
+            Some("v0.1.5-dev-SUB1-alt1")
+        );
+    }
+
+    #[test]
+    fn deviation_lineage_dev_base_for_nested_sub() {
+        assert_eq!(
+            deviation_lineage_dev_base("v0.1.5-dev-SUB1-alt1-SUB1").as_deref(),
+            Some("v0.1.5-dev")
+        );
+        assert_eq!(
+            deviation_lineage_dev_base("v0.1.5-dev-alt1-SUB1A").as_deref(),
+            Some("v0.1.5-dev")
+        );
+    }
+
+    #[test]
+    fn suggest_sub_branch_name_options_from_dev_branch() {
+        let options = suggest_deviation_branch_name_options("v0.1.5-dev", &[], &SUB_KIND)
+            .expect("suggest options");
+        assert_eq!(options.len(), 3);
+        assert_eq!(options[0].preview(), "v0.1.5-dev-SUB1");
+    }
+
+    #[test]
+    fn suggest_sub_branch_name_options_from_numeric_sub() {
+        let options = suggest_deviation_branch_name_options("v0.1.5-dev-SUB2", &[], &SUB_KIND)
+            .expect("suggest options");
+        assert_eq!(options[0].preview(), "v0.1.5-dev-SUB2A");
+    }
+
+    #[test]
+    fn suggest_sub_branch_name_options_from_letter_sub() {
+        let existing = vec!["v0.1.5-dev-SUB2A".to_string()];
+        let options =
+            suggest_deviation_branch_name_options("v0.1.5-dev-SUB2A", &existing, &SUB_KIND)
+                .expect("suggest options");
+        assert_eq!(options[0].preview(), "v0.1.5-dev-SUB2B");
+    }
+
+    #[test]
+    fn next_numeric_sub_number_skips_existing_branches() {
+        let existing = vec!["v0.1.5-dev-SUB1".to_string(), "v0.1.5-dev-SUB2".to_string()];
+        assert_eq!(
+            next_numeric_deviation_number("v0.1.5-dev", &existing, &SUB_KIND),
+            3
+        );
+    }
+
+    #[test]
+    fn ot_merge_parent_branch_returns_dev_for_numeric_ot() {
+        let existing = vec!["v0.1.5-dev".to_string()];
+        assert_eq!(
+            deviation_merge_parent_branch("v0.1.5-dev-OT1", &existing).as_deref(),
+            Some("v0.1.5-dev")
+        );
+    }
+
+    #[test]
+    fn ot_merge_parent_branch_returns_numeric_ot_for_letter_ot() {
+        let existing = vec!["v0.1.5-dev-OT1".to_string(), "v0.1.5-dev".to_string()];
+        assert_eq!(
+            deviation_merge_parent_branch("v0.1.5-dev-OT1A", &existing).as_deref(),
+            Some("v0.1.5-dev-OT1")
+        );
+    }
+
+    #[test]
+    fn ot_merge_parent_branch_returns_x_branch_for_ot_from_x() {
+        let existing = vec!["0.37.x".to_string()];
+        assert_eq!(
+            deviation_merge_parent_branch("0.37.x-OT1", &existing).as_deref(),
+            Some("0.37.x")
+        );
+    }
+
+    #[test]
+    fn ot_sibling_branch_names_lists_other_ots_on_same_dev_branch() {
+        let existing = vec![
+            "v0.9.1-dev".to_string(),
+            "v0.9.1-dev-OT1".to_string(),
+            "v0.9.1-dev-OT2".to_string(),
+            "v0.9.1-dev-OT3".to_string(),
+        ];
+        let siblings = deviation_sibling_branch_names("v0.9.1-dev-OT2", &existing);
+        assert_eq!(
+            siblings,
+            vec!["v0.9.1-dev-OT1".to_string(), "v0.9.1-dev-OT3".to_string(),]
+        );
+    }
+
+    #[test]
+    fn is_deviation_branch_recognizes_ot() {
+        assert!(is_deviation_branch("v0.1.5-dev-OT1"));
+        assert!(is_deviation_branch("v0.1.5-dev-OT1A"));
+        assert!(!is_deviation_branch("v0.1.5-dev"));
+    }
+
+    #[test]
+    fn deviation_merge_parent_cross_type_ot_from_sub() {
+        let existing = vec!["v0.1.5-dev".to_string(), "v0.1.5-dev-SUB1".to_string()];
+        assert_eq!(
+            deviation_merge_parent_branch("v0.1.5-dev-SUB1-OT1", &existing).as_deref(),
+            Some("v0.1.5-dev-SUB1")
+        );
+    }
+
+    #[test]
+    fn deviation_lineage_dev_base_for_ot() {
+        assert_eq!(
+            deviation_lineage_dev_base("v0.1.5-dev-OT1-alt1-OT1").as_deref(),
+            Some("v0.1.5-dev")
+        );
+    }
+
+    #[test]
+    fn ot_lineage_dev_base_from_x_branch() {
+        assert_eq!(
+            deviation_lineage_dev_base("0.37.x-OT1").as_deref(),
+            Some("0.37.x")
+        );
+    }
+
+    #[test]
+    fn suggest_ot_branch_name_options_from_dev_branch() {
+        let options = suggest_deviation_branch_name_options("v0.1.5-dev", &[], &OT_KIND)
+            .expect("suggest options");
+        assert_eq!(options.len(), 3);
+        assert_eq!(options[0].preview(), "v0.1.5-dev-OT1");
+    }
+
+    #[test]
+    fn suggest_ot_branch_name_options_from_numeric_ot() {
+        let options = suggest_deviation_branch_name_options("v0.1.5-dev-OT2", &[], &OT_KIND)
+            .expect("suggest options");
+        assert_eq!(options[0].preview(), "v0.1.5-dev-OT2A");
+    }
+
+    #[test]
+    fn suggest_ot_branch_name_options_from_x_branch() {
+        let options = suggest_deviation_branch_name_options("0.37.x", &[], &OT_KIND)
+            .expect("suggest options");
+        assert_eq!(options.len(), 3);
+        assert_eq!(options[0].preview(), "0.37.x-OT1");
+    }
+
+    #[test]
+    fn next_numeric_ot_number_skips_existing_branches() {
+        let existing = vec!["v0.1.5-dev-OT1".to_string(), "v0.1.5-dev-OT2".to_string()];
+        assert_eq!(
+            next_numeric_deviation_number("v0.1.5-dev", &existing, &OT_KIND),
+            3
+        );
     }
 
     #[test]

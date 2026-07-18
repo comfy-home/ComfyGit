@@ -48,6 +48,12 @@ pub struct UiSettings {
     pub tab_selection_flash_enabled: bool,
     /// ANSI indexed foreground color for the tab selection flash (default **51** / cyan).
     pub tab_selection_flash_color: u8,
+    /// Git command timeout in seconds (default **20**).
+    pub git_timeout_secs: u64,
+    /// Show info toasts for git commands while they run (default **true**).
+    pub show_git_command_toasts: bool,
+    /// Show toast overlays for git commands run from the CLI (default **true**).
+    pub show_cli_toasts: bool,
 }
 
 impl Default for UiSettings {
@@ -60,6 +66,9 @@ impl Default for UiSettings {
             footer_content: FooterContent::Centered,
             tab_selection_flash_enabled: true,
             tab_selection_flash_color: 51,
+            git_timeout_secs: 20,
+            show_git_command_toasts: true,
+            show_cli_toasts: true,
         }
     }
 }
