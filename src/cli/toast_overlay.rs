@@ -12,9 +12,7 @@
 //! fd redirection and replayed to the real terminal after the overlay exits.
 
 use std::{
-    fs::File,
     io::{self, Write},
-    os::fd::FromRawFd,
     sync::{Arc, Mutex},
     thread,
     time::{Duration, Instant},
@@ -22,11 +20,13 @@ use std::{
 
 use anyhow::{Context, Result};
 use crossterm::{
+    cursor::{Hide, MoveTo, RestorePosition, SavePosition, Show},
     event::{self, Event, KeyCode, KeyEventKind, MouseButton, MouseEventKind},
     execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+    style::{ResetColor, SetBackgroundColor, SetForegroundColor},
+    terminal::{disable_raw_mode, enable_raw_mode},
 };
-use ratatui::{Terminal, backend::CrosstermBackend, layout::Rect, widgets::WidgetRef};
+use ratatui::{buffer::Buffer, layout::Rect, widgets::WidgetRef};
 use ratatui_comfy_toaster::{
     ToastBuilder, ToastEngine, ToastEngineBuilder, ToastMouseButton, ToastShortcut, ToastType,
     ToastUpdate,
@@ -42,144 +42,82 @@ const TICK_INTERVAL: Duration = Duration::from_millis(50);
 /// the overlay (gives user time to read success toasts).
 const LINGER_DURATION: Duration = Duration::from_secs(3);
 
-/// Captures stdout/stderr via fd redirection so the action's `println!`
-/// output is preserved while the alternate screen overlay is active.
-/// After the overlay exits, the captured output is replayed to the real
-/// terminal.
-#[cfg(unix)]
-struct StdoutCapture {
-    saved_stdout: i32,
-    saved_stderr: i32,
-    read_fd: i32,
+/// Render a ratatui `Buffer` to stdout as an overlay: save cursor, move to
+/// each cell position, write the cell content with styling, then restore
+/// cursor. Only writes cells that differ from `prev`.
+fn write_buffer_diff(prev: &Buffer, next: &Buffer) -> io::Result<()> {
+    let mut stdout = io::stdout();
+    execute!(stdout, SavePosition)?;
+    for (x, y, cell) in prev.diff_iter(next) {
+        execute!(stdout, MoveTo(x, y))?;
+        let style = cell.style();
+        if let Some(fg) = style.fg {
+            execute!(
+                stdout,
+                SetForegroundColor(ratatui_crossterm_color_to_crossterm(fg))
+            )?;
+        }
+        if let Some(bg) = style.bg {
+            execute!(
+                stdout,
+                SetBackgroundColor(ratatui_crossterm_color_to_crossterm(bg))
+            )?;
+        }
+        write!(stdout, "{}", cell.symbol())?;
+        execute!(stdout, ResetColor)?;
+    }
+    execute!(stdout, RestorePosition)?;
+    stdout.flush()
 }
 
-#[cfg(unix)]
-impl StdoutCapture {
-    fn new() -> Result<Self> {
-        unsafe {
-            let saved_stdout = libc::dup(libc::STDOUT_FILENO);
-            let saved_stderr = libc::dup(libc::STDERR_FILENO);
-            if saved_stdout < 0 || saved_stderr < 0 {
-                return Err(io::Error::last_os_error().into());
-            }
-
-            let mut pipe_fds = [0i32; 2];
-            if libc::pipe(pipe_fds.as_mut_ptr()) < 0 {
-                libc::close(saved_stdout);
-                libc::close(saved_stderr);
-                return Err(io::Error::last_os_error().into());
-            }
-            let read_fd = pipe_fds[0];
-            let write_fd = pipe_fds[1];
-
-            // Redirect stdout and stderr to the pipe write end.
-            if libc::dup2(write_fd, libc::STDOUT_FILENO) < 0 {
-                libc::close(saved_stdout);
-                libc::close(saved_stderr);
-                libc::close(read_fd);
-                libc::close(write_fd);
-                return Err(io::Error::last_os_error().into());
-            }
-            if libc::dup2(write_fd, libc::STDERR_FILENO) < 0 {
-                let _ = libc::dup2(saved_stdout, libc::STDOUT_FILENO);
-                libc::close(saved_stdout);
-                libc::close(saved_stderr);
-                libc::close(read_fd);
-                libc::close(write_fd);
-                return Err(io::Error::last_os_error().into());
-            }
-            libc::close(write_fd);
-
-            // Make the read end non-blocking so we can drain it in the render loop.
-            let flags = libc::fcntl(read_fd, libc::F_GETFL);
-            if flags >= 0 {
-                libc::fcntl(read_fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
-            }
-
-            // Prevent the saved fds from being inherited.
-            for fd in [saved_stdout, saved_stderr] {
-                let f = libc::fcntl(fd, libc::F_GETFD);
-                if f >= 0 {
-                    libc::fcntl(fd, libc::F_SETFD, f | libc::FD_CLOEXEC);
-                }
-            }
-
-            Ok(Self {
-                saved_stdout,
-                saved_stderr,
-                read_fd,
-            })
-        }
-    }
-
-    /// Drain available data from the pipe into `buf`.
-    fn drain(&self, buf: &mut Vec<u8>) {
-        let mut chunk = [0u8; 4096];
-        loop {
-            let n = unsafe { libc::read(self.read_fd, chunk.as_mut_ptr() as *mut _, chunk.len()) };
-            if n <= 0 {
-                break;
-            }
-            buf.extend_from_slice(&chunk[..n as usize]);
-        }
-    }
-
-    /// Restore the original stdout/stderr and drain remaining pipe data
-    /// into the provided buffer. Does NOT replay — caller replays after
-    /// leaving the alternate screen.
-    fn finish_and_drain(self, out: &mut Vec<u8>) -> Result<()> {
-        // Flush Rust's stdout/stderr buffers before restoring fds.
-        let _ = io::stdout().flush();
-        let _ = io::stderr().flush();
-
-        unsafe {
-            // Restore original fds.
-            libc::dup2(self.saved_stdout, libc::STDOUT_FILENO);
-            libc::dup2(self.saved_stderr, libc::STDERR_FILENO);
-            libc::close(self.saved_stdout);
-            libc::close(self.saved_stderr);
-
-            // Make read blocking for final drain.
-            let flags = libc::fcntl(self.read_fd, libc::F_GETFL);
-            if flags >= 0 {
-                libc::fcntl(self.read_fd, libc::F_SETFL, flags & !libc::O_NONBLOCK);
-            }
-        }
-
-        let mut chunk = [0u8; 4096];
-        loop {
-            let n = unsafe { libc::read(self.read_fd, chunk.as_mut_ptr() as *mut _, chunk.len()) };
-            if n <= 0 {
-                break;
-            }
-            out.extend_from_slice(&chunk[..n as usize]);
-        }
-        unsafe { libc::close(self.read_fd) };
-        Ok(())
+/// Convert a ratatui `Color` to a crossterm `Color`.
+fn ratatui_crossterm_color_to_crossterm(c: ratatui::style::Color) -> crossterm::style::Color {
+    use ratatui::style::Color;
+    match c {
+        Color::Reset => crossterm::style::Color::Reset,
+        Color::Black => crossterm::style::Color::Black,
+        Color::Red => crossterm::style::Color::DarkRed,
+        Color::Green => crossterm::style::Color::DarkGreen,
+        Color::Yellow => crossterm::style::Color::DarkYellow,
+        Color::Blue => crossterm::style::Color::DarkBlue,
+        Color::Magenta => crossterm::style::Color::DarkMagenta,
+        Color::Cyan => crossterm::style::Color::DarkCyan,
+        Color::Gray => crossterm::style::Color::Grey,
+        Color::DarkGray => crossterm::style::Color::DarkGrey,
+        Color::LightRed => crossterm::style::Color::Red,
+        Color::LightGreen => crossterm::style::Color::Green,
+        Color::LightYellow => crossterm::style::Color::Yellow,
+        Color::LightBlue => crossterm::style::Color::Blue,
+        Color::LightMagenta => crossterm::style::Color::Magenta,
+        Color::LightCyan => crossterm::style::Color::Cyan,
+        Color::White => crossterm::style::Color::White,
+        Color::Indexed(i) => crossterm::style::Color::AnsiValue(i),
+        Color::Rgb(r, g, b) => crossterm::style::Color::Rgb { r, g, b },
     }
 }
 
-#[cfg(unix)]
-impl Drop for StdoutCapture {
-    fn drop(&mut self) {
-        unsafe {
-            libc::dup2(self.saved_stdout, libc::STDOUT_FILENO);
-            libc::dup2(self.saved_stderr, libc::STDERR_FILENO);
-            libc::close(self.saved_stdout);
-            libc::close(self.saved_stderr);
-            libc::close(self.read_fd);
+/// Clear a rectangular region of the terminal by overwriting with spaces.
+fn clear_region(area: Rect) -> io::Result<()> {
+    let mut stdout = io::stdout();
+    execute!(stdout, SavePosition)?;
+    for y in area.y..area.y + area.height {
+        execute!(stdout, MoveTo(area.x, y))?;
+        for _ in 0..area.width {
+            write!(stdout, " ")?;
         }
     }
+    execute!(stdout, RestorePosition)?;
+    stdout.flush()
 }
 
-/// Runs `action` in a scoped background thread while displaying a minimal
-/// toast overlay on the current thread. Returns the action's result.
+/// Runs `action` in a scoped background thread while displaying toast
+/// notifications as a true overlay on the current terminal. Returns the
+/// action's result.
 ///
-/// Uses `thread::scope` so the action closure can borrow from the calling
-/// scope without needing `'static`. The overlay enters the alternate screen,
-/// drains git toast events, and renders them in real-time. After the action
-/// completes, the overlay lingers briefly so the user can read the final
-/// toast, then restores the terminal and replays the action's stdout/stderr.
+/// Unlike a full-screen TUI, this does NOT use the alternate screen. The
+/// action's stdout/stderr flow normally to the terminal, and toasts are
+/// rendered on top using cursor save/restore + direct buffer writes.
+/// This means interactive prompts and command output remain visible.
 pub(crate) fn run_with_toast_overlay<T: Send>(
     mut rx: UnboundedReceiver<GitToastEvent>,
     action: impl FnOnce() -> Result<T> + Send,
@@ -189,48 +127,14 @@ pub(crate) fn run_with_toast_overlay<T: Send>(
     let action_done = Arc::new(Mutex::new(false));
     let action_done_clone = action_done.clone();
 
-    // Set up the terminal for the overlay on the main thread.
-    // This must happen BEFORE redirecting stdout, so that raw mode and
-    // alternate screen escape sequences go to the real terminal.
+    // Enable raw mode so we can intercept key events for toast dismissal.
     enable_raw_mode().context("failed to enable raw mode")?;
-    execute!(io::stdout(), EnterAlternateScreen).context("failed to enter alternate screen")?;
+    execute!(io::stdout(), Hide).context("failed to hide cursor")?;
 
-    // Dup the real stdout fd for ratatui to write to. After we redirect
-    // fd 1/2 to the capture pipe, ratatui still writes to the real terminal
-    // via this duped fd.
-    #[cfg(unix)]
-    let real_stdout_fd = unsafe { libc::dup(libc::STDOUT_FILENO) };
-    #[cfg(unix)]
-    if real_stdout_fd < 0 {
-        disable_raw_mode().ok();
-        execute!(io::stdout(), LeaveAlternateScreen).ok();
-        return Err(io::Error::last_os_error().into());
-    }
-
-    // Now redirect stdout/stderr to a pipe so the action's println! output
-    // is captured rather than corrupting the overlay display.
-    #[cfg(unix)]
-    let capture = StdoutCapture::new().context("failed to capture stdout")?;
-
-    // Create ratatui terminal from the duped real stdout fd.
-    #[cfg(unix)]
-    let terminal_stdout: File = unsafe { File::from_raw_fd(real_stdout_fd) };
-    #[cfg(not(unix))]
-    let terminal_stdout = stdout();
-
-    // Buffer for captured output drained during the render loop.
-    #[cfg(unix)]
-    let captured_output = Arc::new(Mutex::new(Vec::<u8>::new()));
-    #[cfg(unix)]
-    let captured_output_clone = captured_output.clone();
-
-    let terminal_result = thread::scope(|scope| {
-        // Spawn the action in a scoped thread (can borrow from caller).
+    let overlay_result = thread::scope(|scope| {
+        // Spawn the action in a scoped thread.
         scope.spawn(move || {
             let result = action();
-            // Flush Rust's stdout/stderr buffers so all output is in the pipe.
-            let _ = io::stdout().flush();
-            let _ = io::stderr().flush();
             if let Ok(mut done) = action_done_clone.lock() {
                 *done = true;
             }
@@ -241,10 +145,10 @@ pub(crate) fn run_with_toast_overlay<T: Send>(
 
         // Run the overlay render loop on the main thread.
         (|| {
-            let mut terminal = Terminal::new(CrosstermBackend::new(terminal_stdout))
-                .context("failed to create terminal")?;
+            let (w, h) = crossterm::terminal::size().unwrap_or((120, 40));
+            let area = Rect::new(0, 0, w, h);
 
-            let mut engine: ToastEngine<()> = ToastEngineBuilder::new(Rect::new(0, 0, 120, 40))
+            let mut engine: ToastEngine<()> = ToastEngineBuilder::new(area)
                 .default_duration(Duration::from_secs(3))
                 .default_progress_bar(true)
                 .build();
@@ -252,19 +156,14 @@ pub(crate) fn run_with_toast_overlay<T: Send>(
             let mut toast_ids: std::collections::HashMap<u64, u64> =
                 std::collections::HashMap::new();
             let mut action_completed_at: Option<Instant> = None;
+            let mut prev_buffer = Buffer::empty(area);
+            let mut last_toast_area = None::<Rect>;
 
             loop {
                 // Check if the action is done.
                 let done = action_done.lock().map(|d| *d).unwrap_or(false);
                 if done && action_completed_at.is_none() {
                     action_completed_at = Some(Instant::now());
-                }
-
-                // Drain captured stdout/stderr from the action thread.
-                #[cfg(unix)]
-                {
-                    let mut buf = captured_output_clone.lock().unwrap();
-                    capture.drain(&mut buf);
                 }
 
                 // Drain toast events.
@@ -376,12 +275,17 @@ pub(crate) fn run_with_toast_overlay<T: Send>(
                     }
                 }
 
-                // Render.
-                terminal.draw(|frame| {
-                    let area = frame.area();
-                    engine.set_area(area);
-                    engine.render_ref(area, frame.buffer_mut());
-                })?;
+                // Render toasts to a buffer and write the diff to stdout.
+                let mut next_buffer = Buffer::empty(area);
+                engine.set_area(area);
+                engine.render_ref(area, &mut next_buffer);
+                write_buffer_diff(&prev_buffer, &next_buffer)?;
+                prev_buffer = next_buffer;
+
+                // Track toast area for cleanup on exit.
+                if engine.has_toast() {
+                    last_toast_area = Some(engine.toast_area());
+                }
 
                 // Check exit conditions.
                 if let Some(completed_at) = action_completed_at {
@@ -398,37 +302,21 @@ pub(crate) fn run_with_toast_overlay<T: Send>(
                 thread::sleep(TICK_INTERVAL);
             }
 
+            // Clear the toast area on exit.
+            if let Some(toast_area) = last_toast_area {
+                clear_region(toast_area)?;
+            }
+
             Ok::<(), anyhow::Error>(())
         })()
     });
 
-    // Restore stdout/stderr and replay captured output.
-    // This must happen BEFORE leaving alternate screen, so that the
-    // LeaveAlternateScreen escape sequence goes to the real terminal.
-    #[cfg(unix)]
-    {
-        // Final drain + restore fds + drain remaining pipe data.
-        let mut buf = captured_output.lock().unwrap();
-        capture.drain(&mut buf);
-        capture.finish_and_drain(&mut buf)?;
-    }
-
-    // Restore terminal (fd 1 is now the real terminal again).
+    // Restore terminal.
+    execute!(io::stdout(), Show).context("failed to show cursor")?;
     disable_raw_mode().context("failed to disable raw mode")?;
-    execute!(io::stdout(), LeaveAlternateScreen).context("failed to leave alternate screen")?;
     io::stdout().flush().ok();
 
-    // Replay captured output after leaving alternate screen.
-    #[cfg(unix)]
-    {
-        let buf = captured_output.lock().unwrap();
-        if !buf.is_empty() {
-            io::stdout().write_all(&buf)?;
-            io::stdout().flush()?;
-        }
-    }
-
-    terminal_result?;
+    overlay_result?;
 
     // Get the action result from the shared slot.
     result_slot
