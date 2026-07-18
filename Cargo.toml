@@ -1,6 +1,6 @@
 [package]
 name = "comfygit"
-version = "0.37.9"
+version = "0.37.10"
 edition = "2024"
 rust-version = "1.90"
 description = "Ratatui public edition of the original Comfy Version Bumper"
@@ -38,8 +38,8 @@ exclude = [
 ## ---------------------------------------------------------------
 ## T O A S T E R
 #
-ratatui-comfy-toaster = "0.5"
-#ratatui-comfy-toaster = { path = "components/comfy-toaster" }
+#ratatui-comfy-toaster = "0.5"
+ratatui-comfy-toaster = { path = "components/comfy-toaster" }
 #
 ## TABS
 #ratatui-comfy-tabs = { path = "components/comfy-tabs" }
