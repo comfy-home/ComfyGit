@@ -49,6 +49,7 @@ pub(crate) enum UiSettingsFocus {
     ShowTabHints,
     HideFooter,
     FooterContent,
+    GitTimeout,
     TabSelectionFlashEnabled,
     TabSelectionFlashColor,
 }
@@ -106,6 +107,7 @@ impl UiSettingsState {
                 UiSettingsFocus::ShowTabHints,
                 UiSettingsFocus::HideFooter,
                 UiSettingsFocus::FooterContent,
+                UiSettingsFocus::GitTimeout,
             ],
             UiSettingsTab::Tabs => vec![
                 UiSettingsFocus::TabSelectionFlashEnabled,
@@ -196,6 +198,7 @@ fn build_rows(tab: UiSettingsTab) -> Vec<UiSettingsRow> {
             UiSettingsRow::Checkbox(UiSettingsFocus::ShowTabHints),
             UiSettingsRow::Checkbox(UiSettingsFocus::HideFooter),
             UiSettingsRow::Cycle(UiSettingsFocus::FooterContent),
+            UiSettingsRow::Cycle(UiSettingsFocus::GitTimeout),
             UiSettingsRow::Spacer(1),
             UiSettingsRow::Text,
         ],
@@ -352,6 +355,7 @@ fn checkbox_label(field: UiSettingsFocus) -> &'static str {
         UiSettingsFocus::ShowTabHints => "Show tab hints in footer",
         UiSettingsFocus::HideFooter => "Hide footer",
         UiSettingsFocus::FooterContent => "Footer content alignment",
+        UiSettingsFocus::GitTimeout => "Git command timeout",
         UiSettingsFocus::TabSelectionFlashEnabled => "Tab selection flash",
         UiSettingsFocus::TabSelectionFlashColor => "Flash color",
     }
@@ -412,6 +416,7 @@ fn render_cycle_row(
     };
     let value = match field {
         UiSettingsFocus::FooterContent => app.config.ui.footer_content.display_name().to_string(),
+        UiSettingsFocus::GitTimeout => format!("{}s", app.config.ui.git_timeout_secs),
         UiSettingsFocus::TabSelectionFlashColor => app.config.ui.tab_selection_flash_color_label(),
         _ => String::new(),
     };
@@ -516,7 +521,9 @@ pub(crate) fn try_handle_ui_settings_key(app: &mut App, key: KeyEvent) -> Result
         KeyCode::Left => {
             if matches!(
                 app.ui_settings_state.focus,
-                UiSettingsFocus::FooterContent | UiSettingsFocus::TabSelectionFlashColor
+                UiSettingsFocus::FooterContent
+                    | UiSettingsFocus::GitTimeout
+                    | UiSettingsFocus::TabSelectionFlashColor
             ) {
                 toggle_focused_ui_settings_control(app, -1)?;
             }
@@ -525,7 +532,9 @@ pub(crate) fn try_handle_ui_settings_key(app: &mut App, key: KeyEvent) -> Result
         KeyCode::Right => {
             if matches!(
                 app.ui_settings_state.focus,
-                UiSettingsFocus::FooterContent | UiSettingsFocus::TabSelectionFlashColor
+                UiSettingsFocus::FooterContent
+                    | UiSettingsFocus::GitTimeout
+                    | UiSettingsFocus::TabSelectionFlashColor
             ) {
                 toggle_focused_ui_settings_control(app, 1)?;
             }
@@ -552,6 +561,21 @@ fn toggle_focused_ui_settings_control(app: &mut App, delta: i32) -> Result<()> {
         UiSettingsFocus::ShowTabHints => app.toggle_tab_hints()?,
         UiSettingsFocus::HideFooter => app.toggle_footer()?,
         UiSettingsFocus::FooterContent => app.cycle_footer_content(delta)?,
+        UiSettingsFocus::GitTimeout => {
+            const TIMEOUT_OPTIONS: [u64; 6] = [5, 10, 20, 30, 60, 120];
+            let current = app.config.ui.git_timeout_secs;
+            let current_idx = TIMEOUT_OPTIONS
+                .iter()
+                .position(|&v| v == current)
+                .unwrap_or(0) as i32;
+            let next_idx = (current_idx + delta).rem_euclid(TIMEOUT_OPTIONS.len() as i32) as usize;
+            app.config.ui.git_timeout_secs = TIMEOUT_OPTIONS[next_idx];
+            app.config_store.save(&app.config)?;
+            app.status = StatusMessage::success(format!(
+                "Git timeout set to {}s.",
+                app.config.ui.git_timeout_secs
+            ));
+        }
         UiSettingsFocus::TabSelectionFlashEnabled => {
             app.config.ui.tab_selection_flash_enabled = !app.config.ui.tab_selection_flash_enabled;
             app.config_store.save(&app.config)?;
