@@ -102,6 +102,16 @@ pub(crate) fn sync_current_branch(repo_root: &str, cancel: Option<GitCancellatio
             print_post_merge_stash_note();
             Ok(())
         }
+        Err(error) if is_stale_ref_lock_error(&error) => {
+            eprintln!("Remote-tracking ref was stale; running git fetch before retry...");
+            run_git_checked_with_cancel(repo_root, &["fetch"], cancel.clone())?;
+            let output = pull_ff_only(repo_root, cancel)?;
+            print_pull_output(output);
+            if stashed {
+                print_post_merge_stash_note();
+            }
+            Ok(())
+        }
         Err(error) => Err(error),
     }
 }
@@ -149,6 +159,11 @@ fn is_local_changes_blocking_pull(error: &anyhow::Error) -> bool {
     message.contains("Your local changes to the following files would be overwritten")
         || message.contains("local changes would be overwritten by merge")
         || message.contains("would be overwritten by checkout")
+}
+
+fn is_stale_ref_lock_error(error: &anyhow::Error) -> bool {
+    let message = error.to_string();
+    message.contains("cannot lock ref") || message.contains("unable to update local ref")
 }
 
 fn print_post_merge_stash_note() {
@@ -256,6 +271,22 @@ mod tests {
             "error: Your local changes to the following files would be overwritten by checkout:\n\tCargo.lock"
         );
         assert!(is_local_changes_blocking_pull(&checkout_error));
+    }
+
+    #[test]
+    fn stale_ref_lock_error_detection_matches_git_messages() {
+        let error = anyhow::anyhow!(
+            "git [\"pull\", \"--ff-only\"] failed in /repo: error: cannot lock ref 'refs/remotes/gitLAB/branch': is at abc but expected def"
+        );
+        assert!(is_stale_ref_lock_error(&error));
+
+        let error2 = anyhow::anyhow!(
+            "git [\"pull\", \"--ff-only\"] failed in /repo: ! abc..def  branch -> gitLAB/branch  (unable to update local ref)"
+        );
+        assert!(is_stale_ref_lock_error(&error2));
+
+        let non_stale = anyhow::anyhow!("some other error");
+        assert!(!is_stale_ref_lock_error(&non_stale));
     }
 
     #[test]
