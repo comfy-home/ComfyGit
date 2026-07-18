@@ -40,12 +40,6 @@ const TICK_INTERVAL: Duration = Duration::from_millis(50);
 /// the overlay (gives user time to read success toasts).
 const LINGER_DURATION: Duration = Duration::from_secs(3);
 
-#[cfg(unix)]
-unsafe extern "C" {
-    fn c_stdout() -> *mut libc::FILE;
-    fn c_stderr() -> *mut libc::FILE;
-}
-
 /// Captures stdout/stderr via fd redirection so the action's `println!`
 /// output is preserved while the alternate screen overlay is active.
 /// After the overlay exits, the captured output is replayed to the real
@@ -130,11 +124,11 @@ impl StdoutCapture {
 
     /// Restore the original stdout/stderr and read any remaining pipe data.
     fn finish_and_replay(self) -> Result<()> {
-        unsafe {
-            // Flush libc buffers before restoring.
-            libc::fflush(c_stdout());
-            libc::fflush(c_stderr());
+        // Flush Rust's stdout/stderr buffers before restoring fds.
+        let _ = io::stdout().flush();
+        let _ = io::stderr().flush();
 
+        unsafe {
             // Restore original fds.
             libc::dup2(self.saved_stdout, libc::STDOUT_FILENO);
             libc::dup2(self.saved_stderr, libc::STDERR_FILENO);
@@ -217,12 +211,9 @@ pub(crate) fn run_with_toast_overlay<T: Send>(
         // Spawn the action in a scoped thread (can borrow from caller).
         scope.spawn(move || {
             let result = action();
-            // Flush libc buffers so all output is in the pipe.
-            #[cfg(unix)]
-            unsafe {
-                libc::fflush(c_stdout());
-                libc::fflush(c_stderr());
-            }
+            // Flush Rust's stdout/stderr buffers so all output is in the pipe.
+            let _ = io::stdout().flush();
+            let _ = io::stderr().flush();
             if let Ok(mut done) = action_done_clone.lock() {
                 *done = true;
             }
