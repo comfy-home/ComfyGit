@@ -12,7 +12,9 @@
 //! fd redirection and replayed to the real terminal after the overlay exits.
 
 use std::{
-    io::{self, Write, stdout},
+    fs::File,
+    io::{self, Write},
+    os::fd::FromRawFd,
     sync::{Arc, Mutex},
     thread,
     time::{Duration, Instant},
@@ -122,8 +124,10 @@ impl StdoutCapture {
         }
     }
 
-    /// Restore the original stdout/stderr and read any remaining pipe data.
-    fn finish_and_replay(self) -> Result<()> {
+    /// Restore the original stdout/stderr and drain remaining pipe data
+    /// into the provided buffer. Does NOT replay — caller replays after
+    /// leaving the alternate screen.
+    fn finish_and_drain(self, out: &mut Vec<u8>) -> Result<()> {
         // Flush Rust's stdout/stderr buffers before restoring fds.
         let _ = io::stdout().flush();
         let _ = io::stderr().flush();
@@ -142,22 +146,15 @@ impl StdoutCapture {
             }
         }
 
-        let mut output = Vec::new();
         let mut chunk = [0u8; 4096];
         loop {
             let n = unsafe { libc::read(self.read_fd, chunk.as_mut_ptr() as *mut _, chunk.len()) };
             if n <= 0 {
                 break;
             }
-            output.extend_from_slice(&chunk[..n as usize]);
+            out.extend_from_slice(&chunk[..n as usize]);
         }
         unsafe { libc::close(self.read_fd) };
-
-        if !output.is_empty() {
-            let mut real_stdout = io::stdout();
-            real_stdout.write_all(&output)?;
-            real_stdout.flush()?;
-        }
         Ok(())
     }
 }
@@ -192,14 +189,34 @@ pub(crate) fn run_with_toast_overlay<T: Send>(
     let action_done = Arc::new(Mutex::new(false));
     let action_done_clone = action_done.clone();
 
-    // Capture stdout/stderr before entering alternate screen.
+    // Set up the terminal for the overlay on the main thread.
+    // This must happen BEFORE redirecting stdout, so that raw mode and
+    // alternate screen escape sequences go to the real terminal.
+    enable_raw_mode().context("failed to enable raw mode")?;
+    execute!(io::stdout(), EnterAlternateScreen).context("failed to enter alternate screen")?;
+
+    // Dup the real stdout fd for ratatui to write to. After we redirect
+    // fd 1/2 to the capture pipe, ratatui still writes to the real terminal
+    // via this duped fd.
+    #[cfg(unix)]
+    let real_stdout_fd = unsafe { libc::dup(libc::STDOUT_FILENO) };
+    #[cfg(unix)]
+    if real_stdout_fd < 0 {
+        disable_raw_mode().ok();
+        execute!(io::stdout(), LeaveAlternateScreen).ok();
+        return Err(io::Error::last_os_error().into());
+    }
+
+    // Now redirect stdout/stderr to a pipe so the action's println! output
+    // is captured rather than corrupting the overlay display.
     #[cfg(unix)]
     let capture = StdoutCapture::new().context("failed to capture stdout")?;
 
-    // Set up the terminal for the overlay on the main thread.
-    enable_raw_mode().context("failed to enable raw mode")?;
-    let mut stdout_handle = stdout();
-    execute!(stdout_handle, EnterAlternateScreen).context("failed to enter alternate screen")?;
+    // Create ratatui terminal from the duped real stdout fd.
+    #[cfg(unix)]
+    let terminal_stdout: File = unsafe { File::from_raw_fd(real_stdout_fd) };
+    #[cfg(not(unix))]
+    let terminal_stdout = stdout();
 
     // Buffer for captured output drained during the render loop.
     #[cfg(unix)]
@@ -224,7 +241,7 @@ pub(crate) fn run_with_toast_overlay<T: Send>(
 
         // Run the overlay render loop on the main thread.
         (|| {
-            let mut terminal = Terminal::new(CrosstermBackend::new(stdout_handle))
+            let mut terminal = Terminal::new(CrosstermBackend::new(terminal_stdout))
                 .context("failed to create terminal")?;
 
             let mut engine: ToastEngine<()> = ToastEngineBuilder::new(Rect::new(0, 0, 120, 40))
@@ -385,21 +402,30 @@ pub(crate) fn run_with_toast_overlay<T: Send>(
         })()
     });
 
-    // Restore terminal.
-    disable_raw_mode().context("failed to disable raw mode")?;
-    let mut stdout_restore = io::stdout();
-    execute!(stdout_restore, LeaveAlternateScreen).context("failed to leave alternate screen")?;
-    stdout_restore.flush().ok();
-
     // Restore stdout/stderr and replay captured output.
+    // This must happen BEFORE leaving alternate screen, so that the
+    // LeaveAlternateScreen escape sequence goes to the real terminal.
     #[cfg(unix)]
     {
-        // Final drain to capture any remaining output.
-        {
-            let mut buf = captured_output.lock().unwrap();
-            capture.drain(&mut buf);
+        // Final drain + restore fds + drain remaining pipe data.
+        let mut buf = captured_output.lock().unwrap();
+        capture.drain(&mut buf);
+        capture.finish_and_drain(&mut buf)?;
+    }
+
+    // Restore terminal (fd 1 is now the real terminal again).
+    disable_raw_mode().context("failed to disable raw mode")?;
+    execute!(io::stdout(), LeaveAlternateScreen).context("failed to leave alternate screen")?;
+    io::stdout().flush().ok();
+
+    // Replay captured output after leaving alternate screen.
+    #[cfg(unix)]
+    {
+        let buf = captured_output.lock().unwrap();
+        if !buf.is_empty() {
+            io::stdout().write_all(&buf)?;
+            io::stdout().flush()?;
         }
-        capture.finish_and_replay()?;
     }
 
     terminal_result?;
