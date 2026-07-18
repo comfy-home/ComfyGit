@@ -137,11 +137,14 @@ pub(crate) fn log_cmd_timeout(program: &str, repo_root: &str, args: &[String], t
 }
 
 pub(crate) fn git_default_timeout() -> std::time::Duration {
+    if let Ok(config) = crate::config::ConfigStore::locate().and_then(|s| s.load()) {
+        return std::time::Duration::from_secs(config.ui.git_timeout_secs);
+    }
     std::env::var("COMFYGIT_GIT_TIMEOUT_SECS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .map(std::time::Duration::from_secs)
-        .unwrap_or(std::time::Duration::from_secs(10))
+        .unwrap_or(std::time::Duration::from_secs(20))
 }
 
 pub(crate) fn log_tui(category: &str, message: &str) {
