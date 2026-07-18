@@ -26,7 +26,10 @@ use tui_textarea::TextArea as TuiTextArea;
 use crate::{
     changelog::write_changelog_markdown,
     config::{AppConfig, ConfigStore, FooterContent, IntegrationMode, ProjectConfig, ProjectType},
-    git::{GitCancellation, RepoActivitySummary, collect_all_branch_git_scope_contexts},
+    git::{
+        GitCancellation, GitToastEvent, RepoActivitySummary,
+        collect_all_branch_git_scope_contexts, init_git_toast_channel,
+    },
     tui::{
         HelpModal, OverviewTab, OverviewTileData, PixelLogo, ProjectEditDialog, ProjectEditFocus,
         ProjectWizard, TILE_WIDTH, WizardField, center_vertically, centered_rect,
@@ -182,6 +185,8 @@ pub(crate) struct App {
     pub(crate) status: StatusMessage,
     last_status_toast_id: u64,
     toaster: ToastEngine<()>,
+    git_toast_rx: Option<tokio::sync::mpsc::UnboundedReceiver<GitToastEvent>>,
+    git_toast_ids: std::collections::HashMap<u64, u64>,
     logo: PixelLogo,
     footer_auto_hidden: bool,
     footer_manual_override: bool,
@@ -218,6 +223,7 @@ impl App {
             background_result_rx,
         ) = spawn_background_worker()?;
         let clipboard = Clipboard::new().ok();
+        let git_toast_rx = init_git_toast_channel();
         Ok(Self {
             config_store,
             config,
@@ -326,6 +332,8 @@ impl App {
                 .default_progress_bar(true)
                 .default_progress_bar_style(ToastProgressBarStyle::Minimal)
                 .build(),
+            git_toast_rx: Some(git_toast_rx),
+            git_toast_ids: std::collections::HashMap::new(),
             status,
             logo: PixelLogo::load(),
             footer_auto_hidden: false,
