@@ -9,6 +9,7 @@ mod pr;
 mod reroot;
 mod status;
 mod sync;
+mod toast_events;
 
 pub(crate) use alt::*;
 pub(crate) use branch::*;
@@ -21,6 +22,10 @@ pub(crate) use pr::*;
 pub(crate) use reroot::*;
 pub(crate) use status::*;
 pub(crate) use sync::*;
+pub(crate) use toast_events::{
+    GitToastEvent, GitToastEventKind, init_git_toast_channel, next_git_command_id,
+    send_git_toast_event,
+};
 
 /// Git-related utilities for interacting with repositories, collecting activity summaries, and managing tags.
 use std::{
@@ -910,6 +915,15 @@ pub(crate) fn run_git_with_cancel(
     let started = crate::debug::log_git_start(repo_root, args);
     let timeout = crate::debug::git_default_timeout();
 
+    let command_id = next_git_command_id();
+    send_git_toast_event(GitToastEvent {
+        command_id,
+        kind: GitToastEventKind::Started {
+            args: args.iter().map(|s| s.to_string()).collect(),
+            timeout_secs: timeout.as_secs(),
+        },
+    });
+
     let mut child = Command::new("git")
         .arg("-C")
         .arg(repo_root)
@@ -924,6 +938,10 @@ pub(crate) fn run_git_with_cancel(
             let _ = child.kill();
             let _ = child.wait_with_output();
             crate::debug::log_git_end(repo_root, args, started, false);
+            send_git_toast_event(GitToastEvent {
+                command_id,
+                kind: GitToastEventKind::Cancelled,
+            });
             bail!("git {:?} cancelled in {}", args, repo_root);
         }
 
@@ -936,6 +954,13 @@ pub(crate) fn run_git_with_cancel(
                 .with_context(|| format!("failed to collect git output in {}", repo_root))?;
             let success = status.success();
             crate::debug::log_git_end(repo_root, args, started, success);
+            send_git_toast_event(GitToastEvent {
+                command_id,
+                kind: GitToastEventKind::Finished {
+                    success,
+                    stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+                },
+            });
             return Ok(GitOutput {
                 success,
                 stdout: String::from_utf8_lossy(&output.stdout).to_string(),
@@ -947,6 +972,12 @@ pub(crate) fn run_git_with_cancel(
             let _ = child.kill();
             let _ = child.wait_with_output();
             crate::debug::log_git_timeout(repo_root, args, timeout.as_secs());
+            send_git_toast_event(GitToastEvent {
+                command_id,
+                kind: GitToastEventKind::TimedOut {
+                    timeout_secs: timeout.as_secs(),
+                },
+            });
             bail!(
                 "git {:?} timed out after {}s in {}",
                 args,
