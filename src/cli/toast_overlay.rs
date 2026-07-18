@@ -40,29 +40,49 @@ const TICK_INTERVAL: Duration = Duration::from_millis(50);
 /// the overlay (gives user time to read success toasts).
 const LINGER_DURATION: Duration = Duration::from_secs(3);
 
-/// Render a ratatui `Buffer` to stdout as an overlay: save cursor, move to
-/// each cell position, write the cell content with styling, then restore
-/// cursor. Only writes cells that differ from `prev`.
-fn write_buffer_diff(prev: &Buffer, next: &Buffer) -> io::Result<()> {
+/// Write toast cells from `next` to stdout, but only within `region`.
+/// Also clears cells that were non-empty in `prev` within `region` but are
+/// now empty. Always re-paints all non-empty cells every tick (not just
+/// diffs) because the action thread's output scrolls the terminal,
+/// invalidating previously written cells at fixed positions.
+fn write_buffer_region(prev: &Buffer, next: &Buffer, region: Rect) -> io::Result<()> {
     let mut stdout = io::stdout();
     execute!(stdout, SavePosition)?;
-    for (x, y, cell) in prev.diff_iter(next) {
-        execute!(stdout, MoveTo(x, y))?;
-        let style = cell.style();
-        if let Some(fg) = style.fg {
-            execute!(
-                stdout,
-                SetForegroundColor(ratatui_crossterm_color_to_crossterm(fg))
-            )?;
+    for y in region.y..region.y + region.height {
+        for x in region.x..region.x + region.width {
+            let next_cell = &next[(x, y)];
+            let prev_cell = &prev[(x, y)];
+            // A cell is only truly empty if it has a space symbol AND no
+            // background color — toast backgrounds use space+bg cells.
+            let next_empty = next_cell.symbol() == " " && next_cell.style().bg.is_none();
+            let prev_empty = prev_cell.symbol() == " " && prev_cell.style().bg.is_none();
+            // Skip cells that are empty in both buffers.
+            if next_empty && prev_empty {
+                continue;
+            }
+            // Always write the cell (even if unchanged) because the
+            // terminal may have been scrolled by the action thread.
+            execute!(stdout, MoveTo(x, y))?;
+            if next_empty {
+                write!(stdout, " ")?;
+            } else {
+                let style = next_cell.style();
+                if let Some(fg) = style.fg {
+                    execute!(
+                        stdout,
+                        SetForegroundColor(ratatui_crossterm_color_to_crossterm(fg))
+                    )?;
+                }
+                if let Some(bg) = style.bg {
+                    execute!(
+                        stdout,
+                        SetBackgroundColor(ratatui_crossterm_color_to_crossterm(bg))
+                    )?;
+                }
+                write!(stdout, "{}", next_cell.symbol())?;
+                execute!(stdout, ResetColor)?;
+            }
         }
-        if let Some(bg) = style.bg {
-            execute!(
-                stdout,
-                SetBackgroundColor(ratatui_crossterm_color_to_crossterm(bg))
-            )?;
-        }
-        write!(stdout, "{}", cell.symbol())?;
-        execute!(stdout, ResetColor)?;
     }
     execute!(stdout, RestorePosition)?;
     stdout.flush()
@@ -151,7 +171,7 @@ pub(crate) fn run_with_toast_overlay<T: Send>(
                 std::collections::HashMap::new();
             let mut action_completed_at: Option<Instant> = None;
             let mut prev_buffer = Buffer::empty(area);
-            let mut last_toast_area = None::<Rect>;
+            let mut last_toast_areas: Option<Vec<Rect>> = None;
 
             loop {
                 // Check if the action is done.
@@ -231,17 +251,32 @@ pub(crate) fn run_with_toast_overlay<T: Send>(
                 // Tick the toast engine (expire timed toasts).
                 engine.tick();
 
-                // Render toasts to a buffer and write the diff to stdout.
+                // Render toasts to a buffer.
                 let mut next_buffer = Buffer::empty(area);
                 engine.set_area(area);
                 engine.render_ref(area, &mut next_buffer);
-                write_buffer_diff(&prev_buffer, &next_buffer)?;
-                prev_buffer = next_buffer;
 
-                // Track toast area for cleanup on exit.
-                if engine.has_toast() {
-                    last_toast_area = Some(engine.toast_area());
+                // Get all toast areas from the engine (each toast has its
+                // own area, properly stacked by set_area_avoiding).
+                let current_areas = engine.toast_areas();
+
+                // Clear any old toast areas that are no longer present.
+                if let Some(old_areas) = &last_toast_areas {
+                    for old in old_areas {
+                        if !current_areas.contains(old) {
+                            clear_region(*old)?;
+                        }
+                    }
                 }
+
+                // Write each toast area individually — no giant bounding
+                // box that would wipe out terminal content between toasts.
+                for &toast_area in &current_areas {
+                    write_buffer_region(&prev_buffer, &next_buffer, toast_area)?;
+                }
+
+                prev_buffer = next_buffer;
+                last_toast_areas = Some(current_areas);
 
                 // Check exit conditions.
                 if let Some(completed_at) = action_completed_at {
@@ -256,11 +291,6 @@ pub(crate) fn run_with_toast_overlay<T: Send>(
                 }
 
                 thread::sleep(TICK_INTERVAL);
-            }
-
-            // Clear the toast area on exit.
-            if let Some(toast_area) = last_toast_area {
-                clear_region(toast_area)?;
             }
 
             Ok::<(), anyhow::Error>(())
