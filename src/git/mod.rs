@@ -956,7 +956,10 @@ pub(crate) fn run_git_with_cancel(
             crate::debug::log_git_end(repo_root, args, started, success);
             send_git_toast_event(GitToastEvent {
                 command_id,
-                kind: GitToastEventKind::Finished { success },
+                kind: GitToastEventKind::Finished {
+                    success,
+                    stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+                },
             });
             return Ok(GitOutput {
                 success,
