@@ -5,11 +5,12 @@
 //
 // For details, see the LICENSE file in the repository root.
 
-//! Minimal TUI overlay that shows toast notifications for git commands
+//! Minimal overlay that shows toast notifications for git commands
 //! executed from the CLI. The command runs in a scoped background thread
-//! while a lightweight ratatui render loop on the main thread displays
-//! real-time toast updates. The action's stdout/stderr are captured via
-//! fd redirection and replayed to the real terminal after the overlay exits.
+//! while a lightweight render loop on the main thread displays real-time
+//! toast updates. No alternate screen or raw mode is used — the action's
+//! stdout/stderr flow normally to the terminal, and toasts are rendered on
+//! top via cursor save/restore + direct buffer writes.
 
 use std::{
     io::{self, Write},
@@ -18,18 +19,15 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use crossterm::{
-    cursor::{Hide, MoveTo, RestorePosition, SavePosition, Show},
-    event::{self, Event, KeyCode, KeyEventKind, MouseButton, MouseEventKind},
+    cursor::{MoveTo, RestorePosition, SavePosition},
     execute,
     style::{ResetColor, SetBackgroundColor, SetForegroundColor},
-    terminal::{disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{buffer::Buffer, layout::Rect, widgets::WidgetRef};
 use ratatui_comfy_toaster::{
-    ToastBuilder, ToastEngine, ToastEngineBuilder, ToastMouseButton, ToastShortcut, ToastType,
-    ToastUpdate,
+    ToastBuilder, ToastEngine, ToastEngineBuilder, ToastType, ToastUpdate,
 };
 use tokio::sync::mpsc::UnboundedReceiver;
 
@@ -126,10 +124,6 @@ pub(crate) fn run_with_toast_overlay<T: Send>(
     let result_slot_clone = result_slot.clone();
     let action_done = Arc::new(Mutex::new(false));
     let action_done_clone = action_done.clone();
-
-    // Enable raw mode so we can intercept key events for toast dismissal.
-    enable_raw_mode().context("failed to enable raw mode")?;
-    execute!(io::stdout(), Hide).context("failed to hide cursor")?;
 
     let overlay_result = thread::scope(|scope| {
         // Spawn the action in a scoped thread.
@@ -237,44 +231,6 @@ pub(crate) fn run_with_toast_overlay<T: Send>(
                 // Tick the toast engine (expire timed toasts).
                 engine.tick();
 
-                // Handle input events (non-blocking).
-                while event::poll(Duration::from_millis(0)).unwrap_or(false) {
-                    if let Ok(Event::Key(key)) = event::read()
-                        && key.kind == KeyEventKind::Press
-                    {
-                        match key.code {
-                            KeyCode::Enter
-                            | KeyCode::Esc
-                            | KeyCode::Char('q')
-                            | KeyCode::Char('Q')
-                                if engine.has_toast() =>
-                            {
-                                engine.handle_shortcut(ToastShortcut::Dismiss);
-                            }
-                            _ => {}
-                        }
-                    }
-                    if let Ok(Event::Mouse(mouse)) = event::read() {
-                        match mouse.kind {
-                            MouseEventKind::Down(MouseButton::Left) => {
-                                engine.handle_click(
-                                    mouse.column,
-                                    mouse.row,
-                                    ToastMouseButton::Left,
-                                );
-                            }
-                            MouseEventKind::Down(MouseButton::Right) => {
-                                engine.handle_click(
-                                    mouse.column,
-                                    mouse.row,
-                                    ToastMouseButton::Right,
-                                );
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-
                 // Render toasts to a buffer and write the diff to stdout.
                 let mut next_buffer = Buffer::empty(area);
                 engine.set_area(area);
@@ -310,11 +266,6 @@ pub(crate) fn run_with_toast_overlay<T: Send>(
             Ok::<(), anyhow::Error>(())
         })()
     });
-
-    // Restore terminal.
-    execute!(io::stdout(), Show).context("failed to show cursor")?;
-    disable_raw_mode().context("failed to disable raw mode")?;
-    io::stdout().flush().ok();
 
     overlay_result?;
 
