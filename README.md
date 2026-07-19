@@ -58,9 +58,72 @@ Enjoy!
 
 ---
 
-<details><summary>👀 What's new in v0.35.20 ...</summary>
+<details><summary>👀 What's new in v0.37.13 ...</summary>
 
 ### 💥 💥 💥 This Release's Top Picks ...  💥 💥 💥
+
+<sup>💬 Intro:</sup>  
+<sup>_Following few releases will not be possible to build from source. This is because we are developing several components (3), that are not ready for public release yet, but they are already partially implemented in ComfyGit for development purposes. To use this release you need to use an installer (deb, rpm, msi, etc). We'll announce once this limitation ends. There is quite a few addition in this release:_</sup>  
+
+#### **1. &nbsp;&nbsp;&nbsp;Brand new bespoke-made text engine `ratatui-comfy-text-engine`**
+- Completely changes experience within TUI, especially where markdown is rendered
+
+#### **2. &nbsp;&nbsp;&nbsp;BRANCHED Projects Improvements!**
+- Massively improved tagging and changelogs
+  - RLS flow now tags core and all its services/modules as `{sm_version} (core-{core_version})`
+    - example: if service/module has current version v0.5.2 and the core's version is v0.9.1, the module/service tag is "v0.5.2 (core-0.9.1)"
+  - Changelogs from services/modules are attached to core changelog
+- Services/modules now have RLS capabilities disabled
+- RLS flow is supported only via CORE
+- NOTE:
+  - we'll re-enable RLS for some modules in a better way, comming soon
+
+#### **3. &nbsp;&nbsp;&nbsp;GIT improvements!**
+- RLS may now be enebled to launch from non-main branch
+  - Enabled via checkbox in `Project Settings/Distro`
+
+#### **4. &nbsp;&nbsp;&nbsp;Improvements in `cg new` flow**
+- bugfixed option list when patch bumping is used from `main`
+- added automated branch switching
+- added possibility to append text within patch flow
+- added optional RRT (reroot) during the flow when `x` branch is behind `main`
+
+#### **5. &nbsp;&nbsp;&nbsp;Completely refactored branch resolution within `cg br` flows**
+- `cg br` tree generation is 600% faster for CGFe projects
+- the same goes for `cg br end` flow: what took 20s now takes less than 5
+- CGFe projects are projects which have ComfyGitFlow checkbox ticked in `Project Settings`
+
+#### **6. &nbsp;&nbsp;&nbsp;New Toasts **
+- Due to functional improvements in our `ratatui-comfy-toaster` we were able to implement new toasts for git commands execution.
+- New **experimental** feature: toasts displayed outside TUI in your terminal when executing `cg` commands
+- Can be disabled in `S` settings in TUI
+
+#### **7. &nbsp;&nbsp;&nbsp;New configurable git command timeout in `S` settings menu**
+#### **8. &nbsp;&nbsp;&nbsp;Misc **
+- Added debugging
+- Added time-outs to avoid TUI freezing if any synchronous git sequence fails mid-process
+
+#### **9. &nbsp;&nbsp;&nbsp;New `cg br end` option**
+- if the branch end command is run there is a brand new option if there are uncommited changes: `stash, merge, pop`
+- if you want to conclude the current branch, and commit current changes in a new one, this option allows you to do so with one simple command 
+
+#### **10. &nbsp;&nbsp;&nbsp;New branch types: `SUB`, `OT` and `OFF`**
+- Similar to the current "alt" concept,the only difference will be usage, so it's easy to recognise and categorize based on used branch sub-type.
+- Concept:
+  - Old "alt" should be used for "alternatives", example: user is in `x` > `dev` and ran into issue → they create one or more `alt` branches where they try to overcome this issue. **Usually not all `alt` branches gets merged.**
+  - "SUB" should be used for "sub-development", example: user is in `x` > `dev` and finds current work more complicated than expected → they can create one or more `SUB` branches into which they can split the workload. **Usually all `SUB` branches gets merged.**
+  - `OT` stands for off-topic, and should be used when user is in a branch working on a feature (or bugfix, or whatever), and during this development they encounter a bug, or obstacle that is not really related to the main branch topic, but main topic can't be implemented without resolving off-topic issue.
+- user can create alt branches within SUB branch and vice versa.
+- SUB branch follows the same naming convetion as alt (SUB1, SUB2 / SUB1--specific, SUB2--specific; or SUB1A, SUB1B, etc)
+
+
+<sub>...  🎉 Enjoy!</sub>
+
+<br><br>
+
+<details><summary>👀 See previous changes...</summary>
+<br>
+<details><summary>v0-35-20 ...</summary>
 
 #### **1. &nbsp;&nbsp;&nbsp;v0.35.3: ComfyGitFlow declaration**
 #### **2. &nbsp;&nbsp;&nbsp;v0.35.3: New "Git" tab in `Project Settings`**
@@ -108,10 +171,8 @@ Enjoy!
 
 <sub>...  🎉 Enjoy!</sub>
 
-<br><br>
-
-<details><summary>👀 See previous changes...</summary>
 <br>
+</details>
 <details><summary>v0-34-3 ...</summary>
 
 #### **1. &nbsp;&nbsp;&nbsp;v0.32.x: From now on, ComfyGit supports GitLab!**
@@ -173,27 +234,16 @@ Enjoy!
 
 <br>
 </details>
-<details><summary>v0-28-4 ...</summary>
-
-#### **1. &nbsp;&nbsp;&nbsp;Ability to inject historical Top Picks/changelogs into README!**
-#### **2. &nbsp;&nbsp;&nbsp;Ability to inject only Top Picks (no changelogs)**
-#### **3. &nbsp;&nbsp;&nbsp;Changes default folder of historical changelogs to `.changelogs/history`**
-- This has been done to declutter the `.changelogs` folder, so user does not need to scroll down on GitHub page to see README.md summarizing changelog within `.changelogs` folder
-
-
-<sub>...  🎉 Enjoy!</sub>
-
-<br>
-</details>
 </details>
 <br>
 
 ---
-<sup>... ✨ auto-injected by [ComfyGit](https://github.com/comfy-home/ComfyGit)       |       For detailed changelog [CLICK HERE](https://gitlab.com/comfyhome/dist/ComfyGit/-/releases/v0.35.20)</sup>
+<sup>... ✨ auto-injected by [ComfyGit](https://github.com/comfy-home/ComfyGit)       |       For detailed changelog [CLICK HERE](https://gitlab.com/comfyhome/dist/ComfyGit/-/releases/v0.37.13)</sup>
 
 ---
 
 </details>
+
 
 
 
