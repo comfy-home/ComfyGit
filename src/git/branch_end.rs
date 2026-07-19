@@ -33,6 +33,7 @@ pub(crate) fn run_branch_done(
     cancel: Option<GitCancellation>,
 ) -> Result<()> {
     let forge = forge::require_forge_for_repo(repo_root)?;
+    let mut needs_stash_pop = false;
     let created_pr = loop {
         match run_pr_and_capture(
             repo_root,
@@ -46,12 +47,9 @@ pub(crate) fn run_branch_done(
             Err(error) => {
                 // Check for uncommitted changes error first
                 if is_uncommitted_changes_error(&error) {
-                    if let Err(e) = handle_uncommitted_changes(repo_root, cancel.clone()) {
-                        // If the user cancelled or there was an error, bail out
-                        if e.to_string().contains("Cancelled by user") {
-                            bail!("Cancelled by user");
-                        }
-                        return Err(e);
+                    let pop_after = handle_uncommitted_changes(repo_root, cancel.clone())?;
+                    if pop_after {
+                        needs_stash_pop = true;
                     }
                     // Try again after handling uncommitted changes
                     continue;
@@ -91,7 +89,16 @@ pub(crate) fn run_branch_done(
             }
         }
     };
-    run_merge_for_pull_request(repo_root, forge, created_pr.number, cancel)?;
+    run_merge_for_pull_request(repo_root, forge, created_pr.number, cancel.clone())?;
+
+    // Pop stash if the user chose "Stash, continue, and pop".
+    if needs_stash_pop {
+        if let Err(e) = run_git_checked_with_cancel(repo_root, &["stash", "pop"], cancel) {
+            eprintln!("\x1b[1;31mError: failed to pop stash after merge: {e:#}\x1b[0m");
+            return Err(e);
+        }
+        println!("Stash popped successfully.");
+    }
 
     println!();
     println!(
@@ -145,11 +152,12 @@ fn is_ahead_error(error: &anyhow::Error) -> Option<String> {
 enum UncommittedChangesAction {
     Commit,
     Stash,
+    StashAndPop,
     Cancel,
 }
 
 fn prompt_uncommitted_changes() -> Result<UncommittedChangesAction> {
-    let mut selected = 0; // 0 = Commit, 1 = Stash, 2 = Cancel
+    let mut selected = 0; // 0 = Commit, 1 = Stash, 2 = StashAndPop, 3 = Cancel
 
     let raw_mode = TerminalRawModeGuard::enter()?;
 
@@ -169,7 +177,7 @@ fn prompt_uncommitted_changes() -> Result<UncommittedChangesAction> {
             KeyCode::Up if selected > 0 => {
                 selected = selected.saturating_sub(1);
             }
-            KeyCode::Down if selected < 2 => {
+            KeyCode::Down if selected < 3 => {
                 selected += 1;
             }
             KeyCode::Enter => {
@@ -177,7 +185,8 @@ fn prompt_uncommitted_changes() -> Result<UncommittedChangesAction> {
                 return Ok(match selected {
                     0 => UncommittedChangesAction::Commit,
                     1 => UncommittedChangesAction::Stash,
-                    2 => UncommittedChangesAction::Cancel,
+                    2 => UncommittedChangesAction::StashAndPop,
+                    3 => UncommittedChangesAction::Cancel,
                     _ => UncommittedChangesAction::Cancel,
                 });
             }
@@ -198,7 +207,8 @@ fn prompt_uncommitted_changes() -> Result<UncommittedChangesAction> {
     }
 }
 
-fn handle_uncommitted_changes(repo_root: &str, cancel: Option<GitCancellation>) -> Result<()> {
+/// Returns `true` if the stash should be popped after a successful merge.
+fn handle_uncommitted_changes(repo_root: &str, cancel: Option<GitCancellation>) -> Result<bool> {
     let action = prompt_uncommitted_changes()?;
 
     match action {
@@ -223,6 +233,7 @@ fn handle_uncommitted_changes(repo_root: &str, cancel: Option<GitCancellation>) 
             }
 
             run_git_checked_with_cancel(repo_root, &["commit", "-m", commit_message], cancel)?;
+            Ok(false)
         }
         UncommittedChangesAction::Stash => {
             // Stash changes with a default message
@@ -231,13 +242,27 @@ fn handle_uncommitted_changes(repo_root: &str, cancel: Option<GitCancellation>) 
                 &["stash", "push", "-m", "Auto-stash before branch merge"],
                 cancel,
             )?;
+            Ok(false)
+        }
+        UncommittedChangesAction::StashAndPop => {
+            // Stash changes, merge will proceed, and stash will be popped
+            // after a successful merge.
+            run_git_checked_with_cancel(
+                repo_root,
+                &[
+                    "stash",
+                    "push",
+                    "-m",
+                    "Auto-stash before branch merge (will pop)",
+                ],
+                cancel,
+            )?;
+            Ok(true)
         }
         UncommittedChangesAction::Cancel => {
             bail!("Cancelled by user");
         }
     }
-
-    Ok(())
 }
 
 fn render_uncommitted_changes_menu(selected: usize) -> Result<()> {
@@ -263,6 +288,7 @@ fn render_uncommitted_changes_menu(selected: usize) -> Result<()> {
     let options = [
         "Commit changes and continue",
         "Stash changes and continue",
+        "Stash, continue merge, and pop stash once done",
         "Cancel the process",
     ];
 
