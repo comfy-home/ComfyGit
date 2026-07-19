@@ -2,6 +2,533 @@
 
 Newest archived changelogs first. When multiple archived files represent the same version, only the newest archive is included here.
 
+## Changelog `v0.37.13` <sup><div align="end">🗓️ 2026-07-19</div></sup>
+
+### 💥 💥 💥 This Release's Top Picks ...  💥 💥 💥
+
+<sup>💬 Intro:</sup>  
+<sup>_Following few releases will not be possible to build from source. This is because we are developing several components (3), that are not ready for public release yet, but they are already partially implemented in ComfyGit for development purposes. To use this release you need to use an installer (deb, rpm, msi, etc). We'll announce once this limitation ends. There is quite a few addition in this release:_</sup>  
+
+#### **1. &nbsp;&nbsp;&nbsp;Brand new bespoke-made text engine `ratatui-comfy-text-engine`**
+- Completely changes experience within TUI, especially where markdown is rendered
+
+#### **2. &nbsp;&nbsp;&nbsp;BRANCHED Projects Improvements!**
+- Massively improved tagging and changelogs
+  - RLS flow now tags core and all its services/modules as `{sm_version} (core-{core_version})`
+    - example: if service/module has current version v0.5.2 and the core's version is v0.9.1, the module/service tag is "v0.5.2 (core-0.9.1)"
+  - Changelogs from services/modules are attached to core changelog
+- Services/modules now have RLS capabilities disabled
+- RLS flow is supported only via CORE
+- NOTE:
+  - we'll re-enable RLS for some modules in a better way, comming soon
+
+#### **3. &nbsp;&nbsp;&nbsp;GIT improvements!**
+- RLS may now be enebled to launch from non-main branch
+  - Enabled via checkbox in `Project Settings/Distro`
+
+#### **4. &nbsp;&nbsp;&nbsp;Improvements in `cg new` flow**
+- bugfixed option list when patch bumping is used from `main`
+- added automated branch switching
+- added possibility to append text within patch flow
+- added optional RRT (reroot) during the flow when `x` branch is behind `main`
+
+#### **5. &nbsp;&nbsp;&nbsp;Completely refactored branch resolution within `cg br` flows**
+- `cg br` tree generation is 600% faster for CGFe projects
+- the same goes for `cg br end` flow: what took 20s now takes less than 5
+- CGFe projects are projects which have ComfyGitFlow checkbox ticked in `Project Settings`
+
+#### **6. &nbsp;&nbsp;&nbsp;New Toasts **
+- Due to functional improvements in our `ratatui-comfy-toaster` we were able to implement new toasts for git commands execution.
+- New **experimental** feature: toasts displayed outside TUI in your terminal when executing `cg` commands
+- Can be disabled in `S` settings in TUI
+
+#### **7. &nbsp;&nbsp;&nbsp;New configurable git command timeout in `S` settings menu**
+#### **8. &nbsp;&nbsp;&nbsp;Misc **
+- Added debugging
+- Added time-outs to avoid TUI freezing if any synchronous git sequence fails mid-process
+
+#### **9. &nbsp;&nbsp;&nbsp;New `cg br end` option**
+- if the branch end command is run there is a brand new option if there are uncommited changes: `stash, merge, pop`
+- if you want to conclude the current branch, and commit current changes in a new one, this option allows you to do so with one simple command 
+
+#### **10. &nbsp;&nbsp;&nbsp;New branch types: `SUB`, `OT` and `OFF`**
+- Similar to the current "alt" concept,the only difference will be usage, so it's easy to recognise and categorize based on used branch sub-type.
+- Concept:
+  - Old "alt" should be used for "alternatives", example: user is in `x` > `dev` and ran into issue → they create one or more `alt` branches where they try to overcome this issue. **Usually not all `alt` branches gets merged.**
+  - "SUB" should be used for "sub-development", example: user is in `x` > `dev` and finds current work more complicated than expected → they can create one or more `SUB` branches into which they can split the workload. **Usually all `SUB` branches gets merged.**
+  - `OT` stands for off-topic, and should be used when user is in a branch working on a feature (or bugfix, or whatever), and during this development they encounter a bug, or obstacle that is not really related to the main branch topic, but main topic can't be implemented without resolving off-topic issue.
+- user can create alt branches within SUB branch and vice versa.
+- SUB branch follows the same naming convetion as alt (SUB1, SUB2 / SUB1--specific, SUB2--specific; or SUB1A, SUB1B, etc)
+
+
+<sub>...  🎉 Enjoy!</sub>
+
+<br>
+
+### 🧩 Features
+
+* add mouse event handling for left button clicks in help modal <sub><sup><sup>_9eba4de_</sup></sup></sub>
+
+* enhance HelpModal with mouse event handling and markdown rendering improvements <sub><sup><sup>_d6cb76a_</sup></sup></sub>
+
+* implement MarkdownView for interactive markdown rendering with details toggle support <sub><sup><sup>_22895eb_</sup></sup></sub>
+
+* add HelpImageResolver for managing help images in markdown rendering <sub><sup><sup>_95dd81b_</sup></sup></sub>
+
+* add asset_dir method to HelpContext for resolving image paths in markdown <sub><sup><sup>_695335c_</sup></sup></sub>
+
+* add assets module for managing help-related assets <sub><sup><sup>_b75b4e7_</sup></sup></sub>
+
+* enhance HelpModal with image protocol handling and URL opening support <sub><sup><sup>_355a508_</sup></sup></sub>
+
+* extend MarkdownView to support image rendering and link tracking in markdown <sub><sup><sup>_682f934_</sup></sup></sub>
+
+* enhance MarkdownView to accept a help picker for improved image resolution and rendering <sub><sup><sup>_77cbb43_</sup></sup></sub>
+
+* implement advanced image resolution handling in HelpImageResolver with dynamic font sizing and protocol support <sub><sup><sup>_59c3db9_</sup></sup></sub>
+
+* refine HelpImageResolver with improved image handling, layout width constants, and enhanced cell dimension calculations <sub><sup><sup>_c70ba3b_</sup></sup></sub>
+
+* initialize help picker in terminal setup for enhanced image support <sub><sup><sup>_9828a18_</sup></sup></sub>
+
+* enhance help picker functionality with terminal capability detection and optimized image rendering <sub><sup><sup>_08e7a1a_</sup></sup></sub>
+
+* expose init_help_picker for improved help picker integration in TUI <sub><sup><sup>_43045f1_</sup></sup></sub>
+
+* expose init_help_picker in TUI module for enhanced help functionality <sub><sup><sup>_4f38d83_</sup></sup></sub>
+
+* giving up for now on image render in `Konsole` and `ptyxis` - add support for Halfblocks protocol in Konsole and implement functions to manage Sixel image spill and screen row calculations <sub><sup><sup>_35fa71d_</sup></sup></sub>
+
+* add release notes preview functionality and improve rendering of markdown in ReleaseNowDialog <sub><sup><sup>_4806655_</sup></sup></sub>
+
+* add release now markdown view and source to App structure for enhanced release notes rendering <sub><sup><sup>_a50f4d5_</sup></sup></sub>
+
+* enhance ReleaseNowDialog with improved selection handling and release notes rendering capabilities <sub><sup><sup>_56a77ae_</sup></sup></sub>
+
+* add directory navigation in FileBrowserDialog <sub><sup><sup>_8393e81_</sup></sup></sub>
+
+* add release_script_path_token function to extract script path from input string <sub><sup><sup>_dde5532_</sup></sup></sub>
+
+* implement project target path resolution and add tests for relative path handling <sub><sup><sup>_557bb9d_</sup></sup></sub>
+
+* enhance tag dialog key handling <sub><sup><sup>_52da547_</sup></sup></sub>
+
+* add integration mode determination for repository configuration <sub><sup><sup>_11e92e0_</sup></sup></sub>
+
+* introduce TagDialogFocus enum and update TagDialog structure to manage focus state <sub><sup><sup>_70de7f3_</sup></sup></sub>
+
+* expose find_scope_for_cwd function and implement sync_repo_root_for_cwd for improved project scope handling <sub><sup><sup>_55f33ed_</sup></sup></sub>
+
+* implement local changes stashing before post-merge sync and enhance pull error handling <sub><sup><sup>_2b2045d_</sup></sup></sub>
+
+* add functionality to switch branches with options to discard blocking changes after a merge <sub><sup><sup>_7ca4d5d_</sup></sup></sub>
+
+* enhance project scope resolution by adding support for deepest matching scope and improve remote spec resolution logic <sub><sup><sup>_9190a21_</sup></sup></sub>
+
+* add allow_non_main_release_flow option to ReleaseNowSettings <sub><sup><sup>_e921091_</sup></sup></sub>
+
+* implement branched release notes generation and validation enhancements <sub><sup><sup>_bd6f61e_</sup></sup></sub>
+
+* add conditional release tile display based on project type and branch scope <sub><sup><sup>_3c3f5b7_</sup></sup></sub>
+
+* enhance project settings tab logic to conditionally display Distro tab based on branch scope <sub><sup><sup>_4e8b30e_</sup></sup></sub>
+
+* add validation for ReleaseNOW availability based on project scope and update job request handling <sub><sup><sup>_20fbd77_</sup></sup></sub>
+
+* add RLS button state management to tiles for improved UI responsiveness <sub><sup><sup>_ae83d07_</sup></sup></sub>
+
+* implement branched project support in ReleaseNOW validation and execution, enhancing changelog generation <sub><sup><sup>_0cf13e5_</sup></sup></sub>
+
+* add ReleaseNowAllowNonMain option to project settings and include corresponding test <sub><sup><sup>_144a11c_</sup></sup></sub>
+
+* add functions for scope handling and remote tag push validation in release process <sub><sup><sup>_fff47aa_</sup></sup></sub>
+
+* add git_worktree_root function to retrieve the root of a Git worktree <sub><sup><sup>_801b8a1_</sup></sup></sub>
+
+* enhance release process with new functions for Git worktree comparison and remote equivalence checks <sub><sup><sup>_2fb5239_</sup></sup></sub>
+
+* introduce iter_branched_sibling_changelog_scopes function to streamline sibling scope filtering in release notes <sub><sup><sup>_5b1f40c_</sup></sup></sub>
+
+* add ensure_local_tag_at_head function to create or move tags to the current HEAD in Git <sub><sup><sup>_a48d44c_</sup></sup></sub>
+
+* implement functions for pushing generated ReleaseNOW branches and handling sibling scope commits in the release process <sub><sup><sup>_cc2140b_</sup></sup></sub>
+
+* add timeout handling for release checks and improve progress messaging in release process <sub><sup><sup>_69283db_</sup></sup></sub>
+
+* add run_blocking_job_with_timeout function to handle operations with a specified timeout <sub><sup><sup>_b97e42a_</sup></sup></sub>
+
+* use bright green color for successful sync completion message <sub><sup><sup>_4b61161_</sup></sup></sub>
+
+* prevent offering non-existent base release line branches when only suffixed variants exist <sub><sup><sup>_2342e52_</sup></sup></sub>
+
+* switch to selected X instead of creating a new plain X without specific <sub><sup><sup>_4aafefd_</sup></sup></sub>
+
+* add optional text suffix support for dev branch names during bump <sub><sup><sup>_87d7482_</sup></sup></sub>
+
+* make sanitize_branch_fragment function publicly accessible within crate <sub><sup><sup>_8b23f4d_</sup></sup></sub>
+
+* prompt to reroot x branch when behind main during bump <sub><sup><sup>_03e5035_</sup></sup></sub>
+
+* add branch_divergence_counts_from_main helper function and make branch_divergence_counts_with_cancel public <sub><sup><sup>_cbefa4c_</sup></sup></sub>
+
+* add debug logging and timeout handling to run_git_with_cancel <sub><sup><sup>_7d3600d_</sup></sup></sub>
+
+* add comprehensive debug logging to TUI event loop and scope selection <sub><sup><sup>_b8c68ea_</sup></sup></sub>
+
+* add debug module initialization and command execution logging <sub><sup><sup>_1464d54_</sup></sup></sub>
+
+* add debug module with configurable logging for git, TUI, and command execution <sub><sup><sup>_2983515_</sup></sup></sub>
+
+* add overview recent changes support with separate dialog state <sub><sup><sup>_a202865_</sup></sup></sub>
+
+* add SelectScope action to RecentChangesLoadAction for direct scope selection <sub><sup><sup>_e1d56a7_</sup></sup></sub>
+
+* offload overview recent changes scope selection to background thread <sub><sup><sup>_7b33673_</sup></sup></sub>
+
+* add cancellation support to select_scope and limit recent changes to 200 commits <sub><sup><sup>_fe1e9a0_</sup></sup></sub>
+
+* remove unused log_tui_scope_select debug logging function <sub><sup><sup>_969aa29_</sup></sup></sub>
+
+* prevent concurrent background jobs when selecting overview scope <sub><sup><sup>_9552bfc_</sup></sup></sub>
+
+* include branch name in push confirmation prompt <sub><sup><sup>_c15704a_</sup></sup></sub>
+
+* add debug logging for branch sync checks <sub><sup><sup>_fd674e5_</sup></sup></sub>
+
+* thread comfygitflow_enabled flag through CLI commands <sub><sup><sup>_28d2e82_</sup></sup></sub>
+
+* thread comfygitflow_enabled flag through branch_done function <sub><sup><sup>_9165fcd_</sup></sup></sub>
+
+* add ComfyGitFlow parent branch resolution logic <sub><sup><sup>_a1557bd_</sup></sup></sub>
+
+* make semver_release_line_branch_from_dev_branch public within crate <sub><sup><sup>_00d3d21_</sup></sup></sub>
+
+* thread comfygitflow_enabled through branch tree building <sub><sup><sup>_92348fb_</sup></sup></sub>
+
+* make parse_letter_alt_base public within crate <sub><sup><sup>_418fa2b_</sup></sup></sub>
+
+* add ComfyGitFlow-based branch distance calculation <sub><sup><sup>_e0340d2_</sup></sup></sub>
+
+* rename alt branch functions to deviation branch functions <sub><sup><sup>_114cbc3_</sup></sup></sub>
+
+* generalize alt branches to deviation branches supporting both alt and SUB types <sub><sup><sup>_190740f_</sup></sup></sub>
+
+* update comfygitflow_root_distance to support nested deviation branches <sub><sup><sup>_566b272_</sup></sup></sub>
+
+* make find_repo_custom_main_branch public within crate <sub><sup><sup>_8257333_</sup></sup></sub>
+
+* add context-aware branch action picker to new command wizard <sub><sup><sup>_747f3b9_</sup></sup></sub>
+
+* add CLI support for `new off` command with optional parameter <sub><sup><sup>_5d4e4b5_</sup></sup></sub>
+
+* add OFF deviation branch support alongside alt and SUB <sub><sup><sup>_3b40c81_</sup></sup></sub>
+
+* add OFF option to context-aware branch action picker <sub><sup><sup>_7db4487_</sup></sup></sub>
+
+* add release-line (.x) branch support to context-aware action picker <sub><sup><sup>_434dc41_</sup></sup></sub>
+
+* calculate OT branch root distance from .x branches correctly <sub><sup><sup>_7e8e7b6_</sup></sup></sub>
+
+* add skip_non_main_check parameter to run_bump function <sub><sup><sup>_9480a82_</sup></sup></sub>
+
+* pass skip_non_main_check flag through run_new to run_bump calls <sub><sup><sup>_734b294_</sup></sup></sub>
+
+* add git timeout setting to UI settings panel <sub><sup><sup>_8fdf845_</sup></sup></sub>
+
+* add git_timeout_secs field to UiSettings config <sub><sup><sup>_08951d6_</sup></sup></sub>
+
+* use git_timeout_secs from config in git_default_timeout function <sub><sup><sup>_16a0b98_</sup></sup></sub>
+
+* add git command toast notifications with progress tracking <sub><sup><sup>_4fc7e90_</sup></sup></sub>
+
+* add git toast event channel infrastructure to App <sub><sup><sup>_c1eabf4_</sup></sup></sub>
+
+* add git command toasts toggle to UI settings <sub><sup><sup>_5433248_</sup></sup></sub>
+
+* add git toast event tracking to run_git_with_cancel <sub><sup><sup>_19e7591_</sup></sup></sub>
+
+* add git toast event infrastructure module <sub><sup><sup>_250cf06_</sup></sup></sub>
+
+* add show_git_command_toasts field to UiSettings config <sub><sup><sup>_ee5b9d4_</sup></sup></sub>
+
+* include stderr in git command failure toasts and keep error toasts visible <sub><sup><sup>_040a1dc_</sup></sup></sub>
+
+* include stderr in git command finished event <sub><sup><sup>_2ad9b96_</sup></sup></sub>
+
+* add stderr field to GitToastEventKind::Finished variant <sub><sup><sup>_2d8d785_</sup></sup></sub>
+
+* add CLI command toasts toggle to UI settings <sub><sup><sup>_e95b4e8_</sup></sup></sub>
+
+* add minimal TUI toast overlay for CLI git commands <sub><sup><sup>_a2c2e47_</sup></sup></sub>
+
+* conditionally enable CLI toast overlay based on config setting <sub><sup><sup>_702a69c_</sup></sup></sub>
+
+* add show_cli_toasts field to UiSettings config <sub><sup><sup>_bfd024a_</sup></sup></sub>
+
+* wrap sync commands with CLI git cancellation handler <sub><sup><sup>_c1d1207_</sup></sup></sub>
+
+* capture and replay stdout/stderr in CLI toast overlay <sub><sup><sup>_cebdc6c_</sup></sup></sub>
+
+* add libc dependency for Unix platforms <sub><sup><sup>_c251c8f_</sup></sup></sub>
+
+* add stale ref lock error detection and automatic retry with fetch <sub><sup><sup>_00ff836_</sup></sup></sub>
+
+* add formatted error output and exit code handling to main <sub><sup><sup>_10d3d61_</sup></sup></sub>
+
+* add stash-and-pop option for uncommitted changes during branch merge <sub><sup><sup>_0c7c492_</sup></sup></sub>
+
+### 🐛 Fix(es)
+
+* correct assertion in changelog tests to match expected markdown output <sub><sup><sup>_b3c13b7_</sup></sup></sub>
+
+* update formatting in top picks rendering and tests to ensure consistent output - adding double-ws for into superscript bullet-point <sub><sup><sup>_0505d06_</sup></sup></sub>
+
+* update project settings tab logic to include scope index in tab strip generation <sub><sup><sup>_e921572_</sup></sup></sub>
+
+* include scope index in project settings tab strip generation for improved logic <sub><sup><sup>_c1f8a5a_</sup></sup></sub>
+
+* preserve focused scope during dashboard tile state updates and invalidate project settings state when necessary <sub><sup><sup>_4734360_</sup></sup></sub>
+
+* invalidate project settings state when selecting a project to ensure accurate dashboard data <sub><sup><sup>_881608c_</sup></sup></sub>
+
+* update composite tag format in release notes tests to include '+' separator <sub><sup><sup>_7b626bc_</sup></sup></sub>
+
+* update format of branched scope tag to use '+' separator in release notes <sub><sup><sup>_6965bd9_</sup></sup></sub>
+
+* only include current version's release line branch in candidates if it exists in repository <sub><sup><sup>_36190ce_</sup></sup></sub>
+
+* CLI toasts simplified <sub><sup><sup>_b73b557_</sup></sup></sub>
+
+### 🔧 Maintenance
+
+* CG app version bump to v0.36.0 <sub><sup><sup>_b29dbff_</sup></sup></sub>
+
+* update ratatui-comfy-text-engine dependency version to 0.1.2 <sub><sup><sup>_140d9b7_</sup></sup></sub>
+
+* CG app version bump to v0.36.1 <sub><sup><sup>_bf29cc7_</sup></sup></sub>
+
+* CG app version bump to v0.36.2 <sub><sup><sup>_198b0d6_</sup></sup></sub>
+
+* CG app version bump to v0.36.3 <sub><sup><sup>_c598b9a_</sup></sup></sub>
+
+* update ratatui-comfy-text-engine version to 0.1.5 in Cargo.lock <sub><sup><sup>_218bbc4_</sup></sup></sub>
+
+* CG app version bump to v0.36.4 <sub><sup><sup>_ccac009_</sup></sup></sub>
+
+* update Rust toolchain version from 1.95 to 1.96 <sub><sup><sup>_86fa7f2_</sup></sup></sub>
+
+* update dependencies and versions in Cargo files for improved compatibility <sub><sup><sup>_2eb4d63_</sup></sup></sub>
+
+* set min rust to 1.90 in Cargo.toml, compile test passed <sub><sup><sup>_1229ed9_</sup></sup></sub>
+
+* update dependencies to latest versions in Cargo.lock and adjust ratatui-comfy-toaster path in Cargo.toml <sub><sup><sup>_5ceffcc_</sup></sup></sub>
+
+* CG app version bump to v0.36.5 <sub><sup><sup>_20e6328_</sup></sup></sub>
+
+* CG app version bump to v0.36.6 <sub><sup><sup>_f26066e_</sup></sup></sub>
+
+* CG app version bump to v0.36.7 <sub><sup><sup>_3aa418a_</sup></sup></sub>
+
+* CG app version bump to v0.36.8 <sub><sup><sup>_35d7e7e_</sup></sup></sub>
+
+* CG app version bump to v0.36.9 <sub><sup><sup>_89f2afe_</sup></sup></sub>
+
+* CG app version bump to v0.36.10 <sub><sup><sup>_63f991c_</sup></sup></sub>
+
+* CG app version bump to v0.36.11 <sub><sup><sup>_6ad6b63_</sup></sup></sub>
+
+* CG app version bump to v0.36.12 <sub><sup><sup>_0faa128_</sup></sup></sub>
+
+* CG app version bump to v0.37.0 <sub><sup><sup>_4d25792_</sup></sup></sub>
+
+* update dependencies - anyhow, ratatui, ratatui-image, and tui-textarea <sub><sup><sup>_b304069_</sup></sup></sub>
+
+* CG app version bump to v0.37.1 <sub><sup><sup>_683dc18_</sup></sup></sub>
+
+* CG app version bump to v0.37.2 <sub><sup><sup>_73099ab_</sup></sup></sub>
+
+* CG app version bump to v0.37.3 <sub><sup><sup>_64d88d2_</sup></sup></sub>
+
+* CG app version bump to v0.37.4 <sub><sup><sup>_ef5e985_</sup></sup></sub>
+
+* CG app version bump to v0.37.5 <sub><sup><sup>_5905e49_</sup></sup></sub>
+
+* CG app version bump to v0.37.6 <sub><sup><sup>_3147f7e_</sup></sup></sub>
+
+* CG app version bump to v0.37.7 <sub><sup><sup>_c2393e6_</sup></sup></sub>
+
+* CG app version bump to v0.37.8 <sub><sup><sup>_e43b786_</sup></sup></sub>
+
+* CG app version bump to v0.37.9 <sub><sup><sup>_9cfe32b_</sup></sup></sub>
+
+* CG app version bump to v0.37.10 <sub><sup><sup>_78834df_</sup></sup></sub>
+
+* CG app version bump to v0.37.11 <sub><sup><sup>_a3216a7_</sup></sup></sub>
+
+* CG app version bump to v0.37.12 <sub><sup><sup>_201a8bd_</sup></sup></sub>
+
+* CG app version bump to v0.37.13 <sub><sup><sup>_a452723_</sup></sup></sub>
+
+### 🎨 Visuals
+
+* update bright green color to use RGB value (94, 255, 0) for enhanced visibility <sub><sup><sup>_8fb4ee1_</sup></sup></sub>
+
+### ♻️ Refactor
+
+* replace ratatui-markdown with comfy-txt-engine for markdown rendering <sub><sup><sup>_1c98007_</sup></sup></sub>
+
+* improve HelpModal by integrating help picker and optimizing image protocol handling <sub><sup><sup>_a157fed_</sup></sup></sub>
+
+* streamline HelpModal by introducing prepared image handling and optimizing layout management <sub><sup><sup>_fa21805_</sup></sup></sub>
+
+* optimize MarkdownView layout handling and enhance image rendering capabilities <sub><sup><sup>_b7f10aa_</sup></sup></sub>
+
+* enhance HelpModal with sliced image support and improved scrolling behavior <sub><sup><sup>_acc3d54_</sup></sup></sub>
+
+* improve HelpModal rendering logic with enhanced visibility handling for Sixel images <sub><sup><sup>_15cb3d4_</sup></sup></sub>
+
+* simplify HelpModal structure by renaming body_area to text_area and optimizing layout width handling <sub><sup><sup>_d95de15_</sup></sup></sub>
+
+* streamline layout width handling in MarkdownView and add set_layout_width method <sub><sup><sup>_0d7b991_</sup></sup></sub>
+
+* optimize rendering logic in App by simplifying Paragraph widget usage and enhancing scroll behavior in ReleaseNowDialog <sub><sup><sup>_b9d6014_</sup></sup></sub>
+
+* enhance ReleaseNOW markdown handling by adding view management and mouse interaction support <sub><sup><sup>_7952ab6_</sup></sup></sub>
+
+* reorganize help and markdown exports in TUI module for improved clarity and structure <sub><sup><sup>_4916af2_</sup></sup></sub>
+
+* streamline MarkdownView initialization in App structure for improved readability <sub><sup><sup>_4c6f9c1_</sup></sup></sub>
+
+* simplify widget rendering in App structure for improved code clarity <sub><sup><sup>_e9dcee3_</sup></sup></sub>
+
+* consolidate help exports in TUI module for improved clarity <sub><sup><sup>_fcc9012_</sup></sup></sub>
+
+* simplify conditionals and method calls in ReleaseNowDialog for improved readability <sub><sup><sup>_054aa21_</sup></sup></sub>
+
+* update cell modification method in erase_terminal_cells <sub><sup><sup>_f895159_</sup></sup></sub>
+
+* improve directory handling and path resolution in App structure for enhanced clarity <sub><sup><sup>_4667424_</sup></sup></sub>
+
+* streamline project target path resolution by removing redundant function and simplifying calls in CLI context <sub><sup><sup>_96151ef_</sup></sup></sub>
+
+* streamline integration mode determination and add tests for dual GitLab/GitHub remotes <sub><sup><sup>_65612a3_</sup></sup></sub>
+
+* simplify tag name generation to use version only and add corresponding tests <sub><sup><sup>_6ba20e1_</sup></sup></sub>
+
+* simplify scope kind checks in release notes by using is_module_or_service_scope function <sub><sup><sup>_2b094fa_</sup></sup></sub>
+
+* streamline scope_remotes_equivalent function and improve readability in release process <sub><sup><sup>_81aa0b8_</sup></sup></sub>
+
+* rename `off` command to `ot` for off-topic branches <sub><sup><sup>_50d5cc2_</sup></sup></sub>
+
+* rename OFF branches to OT (off-topic) throughout deviation system <sub><sup><sup>_40d926e_</sup></sup></sub>
+
+* reformat git module imports for consistency <sub><sup><sup>_e6bf166_</sup></sup></sub>
+
+* replace libc fflush with Rust flush and use run_git_with_cancel <sub><sup><sup>_053b383_</sup></sup></sub>
+
+* fix stdout capture timing to prevent escape sequence corruption <sub><sup><sup>_f4f8735_</sup></sup></sub>
+
+* replace alternate screen with true overlay rendering for CLI toasts <sub><sup><sup>_ead35d0_</sup></sup></sub>
+
+* remove raw mode and input handling from CLI toast overlay <sub><sup><sup>_b73b557_</sup></sup></sub>
+
+* switch toast overlay from diff-based to full repaint rendering <sub><sup><sup>_622ad16_</sup></sup></sub>
+
+* render toasts individually instead of using single bounding box <sub><sup><sup>_0c82b4d_</sup></sup></sub>
+
+### 🧪 Tests
+
+* add tests for repo-relative script path resolution <sub><sup><sup>_8393e81_</sup></sup></sub>
+
+* add unit test for non-main release flow in branched project configuration <sub><sup><sup>_c2354b3_</sup></sup></sub>
+
+* add OFF branch root distance calculation tests <sub><sup><sup>_0c91d52_</sup></sup></sub>
+
+### 📝 Other
+
+* Merge pull request #163 (via ComfyGit) <sub><sup><sup>_f3a56f4_</sup></sup></sub>
+
+* Merge remote-tracking branch 'refs/remotes/gitLAB/0.36.x' into 0.36.x <sub><sup><sup>_efb44ac_</sup></sup></sub>
+
+* Merge pull request #164 (via ComfyGit) <sub><sup><sup>_b6a7b78_</sup></sup></sub>
+
+* Merge pull request #165 (via ComfyGit) <sub><sup><sup>_638b1fc_</sup></sup></sub>
+
+* Merge remote-tracking branch 'refs/remotes/gitLAB/0.36.x' into 0.36.x <sub><sup><sup>_33d7fb8_</sup></sup></sub>
+
+* Merge pull request #166 (via ComfyGit) <sub><sup><sup>_857d36f_</sup></sup></sub>
+
+* Merge remote-tracking branch 'refs/remotes/gitLAB/v0.36.4-dev--comfy-loc' into v0.36.4-dev--comfy-loc <sub><sup><sup>_dd3ca4a_</sup></sup></sub>
+
+* Merge pull request #167 (via ComfyGit) <sub><sup><sup>_7d4929e_</sup></sup></sub>
+
+* Merge pull request #168 (via ComfyGit) <sub><sup><sup>_10fb990_</sup></sup></sub>
+
+* Merge pull request #169 (via ComfyGit) <sub><sup><sup>_f04d4b2_</sup></sup></sub>
+
+* Merge pull request #170 (via ComfyGit) <sub><sup><sup>_b6d194f_</sup></sup></sub>
+
+* Merge pull request #171 (via ComfyGit) <sub><sup><sup>_be6c344_</sup></sup></sub>
+
+* Merge pull request #172 (via ComfyGit) <sub><sup><sup>_788d554_</sup></sup></sub>
+
+* Merge pull request #173 (via ComfyGit) <sub><sup><sup>_26cf7c9_</sup></sup></sub>
+
+* Merge pull request #174 (via ComfyGit) <sub><sup><sup>_69de37a_</sup></sup></sub>
+
+* Merge pull request #175 (via ComfyGit) <sub><sup><sup>_f0cc300_</sup></sup></sub>
+
+* Merge pull request #176 (via ComfyGit) <sub><sup><sup>_57c9b3a_</sup></sup></sub>
+
+* Merge pull request #177 (via ComfyGit) <sub><sup><sup>_5837c94_</sup></sup></sub>
+
+* Merge pull request #178 (via ComfyGit) <sub><sup><sup>_2954468_</sup></sup></sub>
+
+* Merge pull request #179 (via ComfyGit) <sub><sup><sup>_f5594b9_</sup></sup></sub>
+
+* Merge pull request #180 (via ComfyGit) <sub><sup><sup>_209c1de_</sup></sup></sub>
+
+* Merge pull request #181 (via ComfyGit) <sub><sup><sup>_cf4e6ea_</sup></sup></sub>
+
+* Merge pull request #182 (via ComfyGit) <sub><sup><sup>_1223674_</sup></sup></sub>
+
+* Merge pull request #183 (via ComfyGit) <sub><sup><sup>_36615d0_</sup></sup></sub>
+
+* Merge pull request #184 (via ComfyGit) <sub><sup><sup>_0484766_</sup></sup></sub>
+
+* Merge pull request #185 (via ComfyGit) <sub><sup><sup>_df62a61_</sup></sup></sub>
+
+* Merge pull request #186 (via ComfyGit) <sub><sup><sup>_135912c_</sup></sup></sub>
+
+* Merge pull request #187 (via ComfyGit) <sub><sup><sup>_7a3b58e_</sup></sup></sub>
+
+* Merge pull request #188 (via ComfyGit) <sub><sup><sup>_ac87a60_</sup></sup></sub>
+
+* Merge pull request #189 (via ComfyGit) <sub><sup><sup>_356e03f_</sup></sup></sub>
+
+* potentially retry `c251c8f` in the future - worked with gated `_with_cancel` commands initially <sub><sup><sup>_b73b557_</sup></sup></sub>
+
+* Merge pull request #190 (via ComfyGit) <sub><sup><sup>_5b10780_</sup></sup></sub>
+
+* Merge pull request #191 (via ComfyGit) <sub><sup><sup>_25e1646_</sup></sup></sub>
+
+* Merge pull request #192 (via ComfyGit) <sub><sup><sup>_760acb8_</sup></sup></sub>
+
+* Merge pull request #193 (via ComfyGit) <sub><sup><sup>_c078ee4_</sup></sup></sub>
+
+* switch ratatui-comfy-toaster from local path to published v0.6 <sub><sup><sup>_afaee2f_</sup></sup></sub>
+
+* Merge pull request #194 (via ComfyGit) <sub><sup><sup>_2de3bb8_</sup></sup></sub>
+
+* Merge branch 'main' into 0.37.x <sub><sup><sup>_4e3ed83_</sup></sup></sub>
+
+* Merge pull request #195 (via ComfyGit) <sub><sup><sup>_23cad9b_</sup></sup></sub>
+
+* Merge pull request #196 (via ComfyGit) <sub><sup><sup>_51c6965_</sup></sup></sub>
+
+---
+
 ## Changelog `v0.35.20` <sup><div align="end">🗓️ 2026-06-02</div></sup>
 
 ### 💥 💥 💥 This Release's Top Picks ...  💥 💥 💥
