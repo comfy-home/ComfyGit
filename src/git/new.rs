@@ -57,7 +57,7 @@ pub(crate) fn run_new(action_name: Option<&str>, option_name: Option<&str>) -> R
 
     if !project.integration_mode.is_forge_enabled() {
         bail!(
-            "cg new is only available for GitHub-enabled projects; \
+            "cg new is only available for forge-enabled projects (GitHub or GitLab); \
              this project uses {} mode",
             project.integration_mode.display_name()
         )

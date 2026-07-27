@@ -330,7 +330,10 @@ fn build_scope_branch_from_detection(
                     .and_then(|repo| repo.remote_url.clone())
             })
             .unwrap_or_default();
-        Some(prompt_remote_url("GitLab remote URL", &default)?)
+        Some(prompt_remote_url(
+            detection.integration_mode.primary_remote_label(),
+            &default,
+        )?)
     } else {
         detection.remote_url
     };
@@ -344,7 +347,10 @@ fn build_scope_branch_from_detection(
                     .and_then(|repo| repo.secondary_remote_url.clone())
             })
             .unwrap_or_default();
-        Some(prompt_remote_url("GitHub remote URL", &default)?)
+        Some(prompt_remote_url(
+            detection.integration_mode.secondary_remote_label(),
+            &default,
+        )?)
     } else {
         detection.secondary_remote_url
     };
@@ -1207,13 +1213,19 @@ fn build_project_from_detection(
     let repo_root = cwd.display().to_string();
     let remote_url = if detection.integration_mode.requires_remote() {
         let default = detection.remote_url.unwrap_or_default();
-        Some(prompt_remote_url("GitLab remote URL", &default)?)
+        Some(prompt_remote_url(
+            detection.integration_mode.primary_remote_label(),
+            &default,
+        )?)
     } else {
         detection.remote_url
     };
     let secondary_remote_url = if detection.integration_mode.requires_secondary_remote() {
         let default = detection.secondary_remote_url.unwrap_or_default();
-        Some(prompt_remote_url("GitHub remote URL", &default)?)
+        Some(prompt_remote_url(
+            detection.integration_mode.secondary_remote_label(),
+            &default,
+        )?)
     } else {
         detection.secondary_remote_url
     };

@@ -300,14 +300,18 @@ impl ProjectEditDialog {
             ),
             ProjectEditFocus::RepoRoot => ("Repo root", HitAction::EditProjectField(field)),
             ProjectEditFocus::RemoteUrl => {
-                if self.selected_integration_mode().requires_secondary_remote() {
-                    ("GitLab remote URL", HitAction::EditProjectField(field))
-                } else {
-                    ("Remote URL", HitAction::EditProjectField(field))
-                }
+                let mode = self.selected_integration_mode();
+                (
+                    mode.primary_remote_label(),
+                    HitAction::EditProjectField(field),
+                )
             }
             ProjectEditFocus::SecondaryRemoteUrl => {
-                ("GitHub remote URL", HitAction::EditProjectField(field))
+                let mode = self.selected_integration_mode();
+                (
+                    mode.secondary_remote_label(),
+                    HitAction::EditProjectField(field),
+                )
             }
             ProjectEditFocus::TileAutoRotation => {
                 ("Auto-rotation", HitAction::EditProjectField(field))

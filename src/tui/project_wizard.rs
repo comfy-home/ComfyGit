@@ -197,13 +197,13 @@ impl ProjectWizard {
             ),
             WizardField::RepoRoot => ("Repo root", HitAction::WizardField(field)),
             WizardField::RemoteUrl => {
-                if self.selected_integration_mode().requires_secondary_remote() {
-                    ("GitLab remote URL", HitAction::WizardField(field))
-                } else {
-                    ("Remote URL", HitAction::WizardField(field))
-                }
+                let mode = self.selected_integration_mode();
+                (mode.primary_remote_label(), HitAction::WizardField(field))
             }
-            WizardField::SecondaryRemoteUrl => ("GitHub remote URL", HitAction::WizardField(field)),
+            WizardField::SecondaryRemoteUrl => {
+                let mode = self.selected_integration_mode();
+                (mode.secondary_remote_label(), HitAction::WizardField(field))
+            }
             WizardField::TileAutoRotation => ("Auto-rotation", HitAction::WizardField(field)),
             WizardField::TileRotates => ("Rotates", HitAction::WizardField(field)),
             WizardField::TileRotationTiming => ("Rotation (s)", HitAction::WizardField(field)),
