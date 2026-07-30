@@ -356,6 +356,11 @@ fn branch_exists(existing_branches: &[String], candidate: &str) -> bool {
 
 fn validate_deviation_creation_source(current_branch: &str, kind: &DeviationKind) -> Result<()> {
     let (base, _) = split_specific_suffix(current_branch);
+    // SUB branches can be created from any branch (including custom-named ones).
+    // alt and OT still require a dev branch or release-line branch.
+    if kind.command == "sub" {
+        return Ok(());
+    }
     if !(base.contains("-dev") || kind.command == "ot" && base.ends_with(".x")) {
         bail!(
             "cg new {} can only be run from a dev branch or an existing deviation branch; \
@@ -392,6 +397,11 @@ fn suggest_deviation_branch_name_options(
             let next_letter = next_letter_deviation_suffix(&numeric_base, existing_branches, kind)?;
             format!("{}{}", numeric_base, next_letter)
         }
+        DeviationSourceKind::CustomBranch => {
+            let custom_base = base;
+            let next_number = next_numeric_deviation_number(&custom_base, existing_branches, kind);
+            format!("{}{}{}", custom_base, kind.marker, next_number)
+        }
     };
 
     let preview = join_with_specific_suffix(&next_base, specific_suffix.as_deref());
@@ -407,6 +417,8 @@ enum DeviationSourceKind {
     DevBranch,
     NumericDeviation,
     LetterDeviation,
+    /// Any non-dev branch used as a SUB source (e.g. "Custom-Changes").
+    CustomBranch,
 }
 
 fn classify_deviation_source(base: &str, kind: &DeviationKind) -> Result<DeviationSourceKind> {
@@ -420,6 +432,11 @@ fn classify_deviation_source(base: &str, kind: &DeviationKind) -> Result<Deviati
 
     if base.contains("-dev") || (kind.command == "ot" && base.ends_with(".x")) {
         return Ok(DeviationSourceKind::DevBranch);
+    }
+
+    // SUB branches can be created from any branch, including custom-named ones.
+    if kind.command == "sub" {
+        return Ok(DeviationSourceKind::CustomBranch);
     }
 
     bail!(
@@ -470,7 +487,10 @@ fn parse_letter_deviation_base(base: &str, marker: &str) -> Option<(String, char
 }
 
 fn is_valid_deviation_root(branch: &str) -> bool {
-    branch.contains("-dev") || branch.ends_with(".x")
+    // Any non-empty branch can serve as a deviation root.  This allows SUB
+    // branches to be created from custom-named branches (e.g. "Custom-Changes")
+    // and still have their merge parent resolved correctly.
+    !branch.is_empty()
 }
 
 fn strip_to_dev_base(base: &str) -> Option<String> {
@@ -1203,6 +1223,43 @@ mod tests {
         assert_eq!(
             next_numeric_deviation_number("v0.1.5-dev", &existing, &SUB_KIND),
             3
+        );
+    }
+
+    #[test]
+    fn validate_sub_allows_custom_branch() {
+        assert!(validate_deviation_creation_source("Custom-Changes", &SUB_KIND).is_ok());
+        assert!(validate_deviation_creation_source("feature-foo", &SUB_KIND).is_ok());
+        assert!(validate_deviation_creation_source("main", &SUB_KIND).is_ok());
+    }
+
+    #[test]
+    fn validate_alt_still_rejects_custom_branch() {
+        assert!(validate_deviation_creation_source("Custom-Changes", &ALT_KIND).is_err());
+    }
+
+    #[test]
+    fn suggest_sub_branch_name_options_from_custom_branch() {
+        let options = suggest_deviation_branch_name_options("Custom-Changes", &[], &SUB_KIND)
+            .expect("suggest options");
+        assert_eq!(options.len(), 3);
+        assert_eq!(options[0].preview(), "Custom-Changes-SUB1");
+    }
+
+    #[test]
+    fn sub_lineage_dev_base_from_custom_branch() {
+        assert_eq!(
+            deviation_lineage_dev_base("Custom-Changes-SUB1").as_deref(),
+            Some("Custom-Changes")
+        );
+    }
+
+    #[test]
+    fn sub_merge_parent_from_custom_branch() {
+        let existing = vec!["Custom-Changes".to_string()];
+        assert_eq!(
+            deviation_merge_parent_branch("Custom-Changes-SUB1", &existing).as_deref(),
+            Some("Custom-Changes")
         );
     }
 
