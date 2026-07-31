@@ -1125,7 +1125,7 @@ fn cleanup_prepared_vscode_merge_workspace(prepared: &PreparedVscodeMergeWorkspa
     Ok(())
 }
 
-fn merge_in_progress(repo_root: &std::path::Path) -> Result<bool> {
+pub(crate) fn merge_in_progress(repo_root: &std::path::Path) -> Result<bool> {
     let status = Command::new("git")
         .current_dir(repo_root)
         .args(["rev-parse", "-q", "--verify", "MERGE_HEAD"])
@@ -1190,7 +1190,10 @@ fn encode_vscode_path(path: &std::path::Path) -> String {
     encoded
 }
 
-fn list_unmerged_files(repo_root: &str, cancel: Option<GitCancellation>) -> Result<Vec<String>> {
+pub(crate) fn list_unmerged_files(
+    repo_root: &str,
+    cancel: Option<GitCancellation>,
+) -> Result<Vec<String>> {
     let output = run_git_checked_owned_with_cancel(
         repo_root,
         vec![
