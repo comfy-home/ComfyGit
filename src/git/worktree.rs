@@ -266,7 +266,7 @@ pub(crate) fn run_wt_new(
 pub(crate) fn run_wt_end(
     project_root: &Path,
     _worktree_root: Option<&str>,
-    custom_main_branch: Option<&str>,
+    _custom_main_branch: Option<&str>,
     _comfygitflow_enabled: bool,
     cancel: Option<GitCancellation>,
 ) -> Result<()> {
@@ -303,12 +303,15 @@ pub(crate) fn run_wt_end(
         );
     }
 
-    // Determine the merge target (main branch)
-    let mut target_branch = custom_main_branch.map(str::to_string).unwrap_or_else(|| {
+    // Determine the merge target: whatever branch is currently checked out
+    // in the main worktree.  The user explicitly chose it by checking it out,
+    // and the X shortcut lets them change it if needed.  We do NOT use
+    // `custom_main_branch` here — that config is for PR operations, not
+    // worktree merges.
+    let mut target_branch =
         run_git_checked(&project_root_str, &["symbolic-ref", "--short", "HEAD"])
             .map(|s| s.trim().to_string())
-            .unwrap_or_else(|_| "main".to_string())
-    });
+            .unwrap_or_else(|_| "main".to_string());
 
     println!();
     println!("\x1b[36mEnding worktree\x1b[0m");
