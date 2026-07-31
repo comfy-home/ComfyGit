@@ -10,6 +10,7 @@ mod reroot;
 mod status;
 mod sync;
 mod toast_events;
+mod worktree;
 
 pub(crate) use alt::*;
 pub(crate) use branch::*;
@@ -26,6 +27,7 @@ pub(crate) use toast_events::{
     GitToastEvent, GitToastEventKind, init_git_toast_channel, next_git_command_id,
     send_git_toast_event,
 };
+pub(crate) use worktree::*;
 
 /// Git-related utilities for interacting with repositories, collecting activity summaries, and managing tags.
 use std::{
