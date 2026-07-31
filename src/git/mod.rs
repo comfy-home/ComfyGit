@@ -11,6 +11,7 @@ mod status;
 mod sync;
 mod toast_events;
 mod worktree;
+mod worktree_paths;
 
 pub(crate) use alt::*;
 pub(crate) use branch::*;
@@ -28,6 +29,7 @@ pub(crate) use toast_events::{
     send_git_toast_event,
 };
 pub(crate) use worktree::*;
+pub(crate) use worktree_paths::{adjust_paths_for_worktree, restore_paths_after_merge};
 
 /// Git-related utilities for interacting with repositories, collecting activity summaries, and managing tags.
 use std::{

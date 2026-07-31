@@ -225,6 +225,26 @@ pub(crate) fn run_wt_new(
         )?;
     }
 
+    // Adjust relative paths in config files (Cargo.toml, pyproject.toml,
+    // package.json, tsconfig.json) so external dependencies resolve
+    // correctly from the worktree's deeper directory.
+    let adjusted =
+        crate::git::adjust_paths_for_worktree(project_root, &wt_path).unwrap_or_else(|err| {
+            eprintln!(
+                "\x1b[33mwarning: failed to adjust config paths in worktree: {}\x1b[0m",
+                err
+            );
+            0
+        });
+    if adjusted > 0 {
+        run_git_checked(&wt_path_display, &["add", "-A"])?;
+        run_git_checked(
+            &wt_path_display,
+            &["commit", "-m", "chore: adjust relative paths for worktree"],
+        )?;
+        println!("  Adjusted \x1b[33m{adjusted}\x1b[0m relative path(s) in config files.");
+    }
+
     println!();
     println!("\x1b[32mWorktree created successfully.\x1b[0m");
     println!();
@@ -331,6 +351,32 @@ pub(crate) fn run_wt_end(
             println!();
             println!("\x1b[32mMerge successful.\x1b[0m");
             println!();
+
+            // Restore relative paths in config files that were adjusted for
+            // the worktree.  The merged files contain worktree-relative paths
+            // which must be recomputed relative to the main worktree.
+            let restored = crate::git::restore_paths_after_merge(project_root, &worktree_toplevel)
+                .unwrap_or_else(|err| {
+                    eprintln!(
+                        "\x1b[33mwarning: failed to restore config paths after merge: {}\x1b[0m",
+                        err
+                    );
+                    0
+                });
+            if restored > 0 {
+                run_git_checked_with_cancel(&project_root_str, &["add", "-A"], cancel.clone())?;
+                run_git_checked_with_cancel(
+                    &project_root_str,
+                    &[
+                        "commit",
+                        "-m",
+                        "chore: restore relative paths after worktree merge",
+                    ],
+                    cancel.clone(),
+                )?;
+                println!("  Restored \x1b[33m{restored}\x1b[0m relative path(s) in config files.");
+                println!();
+            }
         }
         Err(error) => {
             // Abort the merge
