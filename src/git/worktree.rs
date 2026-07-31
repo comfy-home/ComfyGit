@@ -461,20 +461,41 @@ pub(crate) fn run_wt_end(
             }
         }
         Err(error) => {
-            // Abort the merge
+            // List conflicted files before aborting so the user knows what
+            // needs to be resolved.
+            let conflicts =
+                crate::git::list_unmerged_files(&main_root_str, cancel.clone()).unwrap_or_default();
+
+            // Abort the merge to leave the main worktree clean.
             let _ =
                 run_git_checked_with_cancel(&main_root_str, &["merge", "--abort"], cancel.clone());
-            // Switch back
+            // Switch back to the worktree branch.
             let _ = run_git_checked_with_cancel(
                 &worktree_path,
                 &["checkout", current_branch],
                 cancel.clone(),
             );
-            bail!(
-                "merge failed: {error}\n\n\
-                 \x1b[31mThe merge has been aborted. Resolve conflicts manually in the main worktree.\x1b[0m\n\
-                 Worktree has been kept."
-            );
+
+            println!();
+            println!("\x1b[31mMerge failed: {error}\x1b[0m");
+            println!();
+            if conflicts.is_empty() {
+                println!("\x1b[31mThe merge has been aborted.\x1b[0m");
+            } else {
+                println!("\x1b[31mThe merge has been aborted. Conflicted files:\x1b[0m");
+                for file in &conflicts {
+                    println!("  \x1b[33m{file}\x1b[0m");
+                }
+                println!();
+                println!("  \x1b[2mTo resolve manually, run in the main worktree:\x1b[0m");
+                println!("    \x1b[36mcg wt cd\x1b[0m \x1b[2m# switch to the main worktree\x1b[0m");
+                println!("    \x1b[36mgit merge --no-ff {current_branch}\x1b[0m");
+                println!("    \x1b[2m# resolve conflicts, then:\x1b[0m");
+                println!("    \x1b[36mgit add <files> && git commit\x1b[0m");
+            }
+            println!();
+            println!("Worktree has been kept.");
+            bail!("merge failed");
         }
     }
 
