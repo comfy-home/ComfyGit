@@ -33,10 +33,9 @@ use crossterm::{
 const PR_LIST_LIMIT: usize = 200;
 const FORGE_LINK_LABEL_GITHUB: &str = "<GitHub>";
 const FORGE_LINK_LABEL_GITLAB: &str = "<GitLab>";
-const VSCODE_LINK_LABEL: &str = "<VSCode>";
 const CONFLICT_FIX_PREFIX: &str = "Fix: ";
 const CONFLICT_LINKS_TOTAL_WIDTH: usize =
-    CONFLICT_FIX_PREFIX.len() + FORGE_LINK_LABEL_GITHUB.len() + 1 + VSCODE_LINK_LABEL.len();
+    CONFLICT_FIX_PREFIX.len() + FORGE_LINK_LABEL_GITHUB.len() + 1 + "<VSCode>".len();
 fn forge_link_label(forge: ForgeKind) -> &'static str {
     match forge {
         ForgeKind::GitHub => FORGE_LINK_LABEL_GITHUB,
@@ -631,8 +630,11 @@ fn render_pull_request_title_cell(
         SetForegroundColor(Color::Cyan),
         Print(
             prepared_vscode_workspace
-                .map(|prepared| format_terminal_hyperlink(&prepared.open_uri, VSCODE_LINK_LABEL))
-                .unwrap_or_else(|| VSCODE_LINK_LABEL.to_string())
+                .map(|prepared| {
+                    let label = format!("<{}>", resolve_ide_kind().display_name());
+                    format_terminal_hyperlink(&prepared.open_uri, &label)
+                })
+                .unwrap_or_else(|| { format!("<{}>", resolve_ide_kind().display_name()) })
         ),
         SetForegroundColor(row_color)
     )
@@ -999,13 +1001,17 @@ fn build_vscode_merge_workspace_root(pr_number: u64) -> PathBuf {
 }
 
 fn launch_prepared_vscode_merge_workspace(prepared: &PreparedVscodeMergeWorkspace) -> Result<()> {
+    let ide = resolve_ide_kind();
     let vscode_executable = resolve_vscode_executable()?;
     let mut command = Command::new(vscode_executable);
     if launch_vscode_uri(&prepared.open_uri).is_ok() {
         return Ok(());
     }
 
-    if is_running_inside_vscode_terminal() {
+    // JetBrains uses different CLI flags.
+    if ide == IdeKind::JetBrains {
+        command.arg("diff").arg(&prepared.first_conflicted_file);
+    } else if is_running_inside_vscode_terminal() {
         command
             .arg("--reuse-window")
             .arg(&prepared.first_conflicted_file);
@@ -1020,7 +1026,7 @@ fn launch_prepared_vscode_merge_workspace(prepared: &PreparedVscodeMergeWorkspac
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .context("failed to launch VS Code")?;
+        .with_context(|| format!("failed to launch {}", ide.display_name()))?;
     Ok(())
 }
 
@@ -1032,8 +1038,9 @@ fn finalize_prepared_vscode_merge_workspace(
     let conflicted_files = list_unmerged_files(&worktree_root, cancel.clone())?;
     if !conflicted_files.is_empty() {
         return Ok(PreparedWorkspaceReloadOutcome::ConflictsRemaining(format!(
-            "Conflicts still remain in {}. Resolve them in VS Code, save, then press R again.",
-            prepared.worktree_root.display()
+            "Conflicts still remain in {}. Resolve them in {}, save, then press R again.",
+            prepared.worktree_root.display(),
+            resolve_ide_kind().display_name()
         )));
     }
 
@@ -1090,18 +1097,55 @@ fn ensure_selected_vscode_workspace(
 }
 
 fn launch_vscode_uri(uri: &str) -> Result<()> {
-    let escaped_uri = uri.replace('\'', "''");
-    Command::new("powershell")
-        .args([
-            "-NoProfile",
-            "-Command",
-            &format!("Start-Process '{}'", escaped_uri),
-        ])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .context("failed to launch VS Code URI")?;
-    Ok(())
+    // Windows: use PowerShell Start-Process.
+    #[cfg(target_os = "windows")]
+    {
+        let escaped_uri = uri.replace('\'', "''");
+        if Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-Command",
+                &format!("Start-Process '{}'", escaped_uri),
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .is_ok()
+        {
+            return Ok(());
+        }
+    }
+
+    // macOS: use `open`.
+    #[cfg(target_os = "macos")]
+    {
+        if Command::new("open")
+            .arg(uri)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .is_ok()
+        {
+            return Ok(());
+        }
+    }
+
+    // Linux: use `xdg-open`.
+    #[cfg(target_os = "linux")]
+    {
+        if Command::new("xdg-open")
+            .arg(uri)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .is_ok()
+        {
+            return Ok(());
+        }
+    }
+
+    // Fallback: let the caller handle it via the CLI.
+    Err(anyhow!("no URI launcher available"))
 }
 
 fn dismiss_prepared_vscode_workspace(prepared: Option<PreparedVscodeMergeWorkspace>) {
@@ -1186,40 +1230,169 @@ pub(crate) fn merge_in_progress(repo_root: &std::path::Path) -> Result<bool> {
 fn is_running_inside_vscode_terminal() -> bool {
     env::var("TERM_PROGRAM").is_ok_and(|value| value.eq_ignore_ascii_case("vscode"))
         || env::var_os("VSCODE_GIT_IPC_HANDLE").is_some()
+        || detect_ide_kind().is_some()
+}
+
+/// Detected IDE kind based on environment variables.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IdeKind {
+    VsCode,
+    Devin,
+    Cursor,
+    JetBrains,
+}
+
+impl IdeKind {
+    /// The URI scheme used to open files in this IDE (e.g. `vscode`, `devin`).
+    fn uri_scheme(self) -> &'static str {
+        match self {
+            IdeKind::VsCode => "vscode",
+            IdeKind::Devin => "devin",
+            IdeKind::Cursor => "cursor",
+            // JetBrains uses a different URI format: jetbrains://idea/navigate/...
+            IdeKind::JetBrains => "jetbrains",
+        }
+    }
+
+    /// The CLI command name used to launch this IDE from the terminal.
+    fn cli_command(self) -> &'static str {
+        match self {
+            IdeKind::VsCode => "code",
+            IdeKind::Devin => "devin-desktop",
+            IdeKind::Cursor => "cursor",
+            IdeKind::JetBrains => "idea",
+        }
+    }
+
+    /// The display name shown to the user.
+    fn display_name(self) -> &'static str {
+        match self {
+            IdeKind::VsCode => "VS Code",
+            IdeKind::Devin => "Devin",
+            IdeKind::Cursor => "Cursor",
+            IdeKind::JetBrains => "JetBrains IDE",
+        }
+    }
+}
+
+/// Detects which IDE the terminal is running inside, if any.
+///
+/// VSCode forks (Devin/Windsurf, Cursor) set `VSCODE_*` env vars but not
+/// `TERM_PROGRAM=vscode`.  We distinguish them by checking for their
+/// specific env vars and CLI commands.
+fn detect_ide_kind() -> Option<IdeKind> {
+    // Devin (formerly Windsurf) — sets VSCODE_* vars and has a devin-desktop CLI.
+    // The config directory is ~/.config/Devin or ~/.config/Windsurf.
+    if env::var("VSCODE_CODE_CACHE_PATH")
+        .map(|path| path.contains("Devin") || path.contains("Windsurf"))
+        .unwrap_or(false)
+    {
+        return Some(IdeKind::Devin);
+    }
+
+    // Cursor — sets VSCODE_* vars and has a cursor CLI.
+    if env::var("VSCODE_CODE_CACHE_PATH")
+        .map(|path| path.contains("Cursor"))
+        .unwrap_or(false)
+    {
+        return Some(IdeKind::Cursor);
+    }
+
+    // Standard VS Code.
+    if env::var("TERM_PROGRAM").is_ok_and(|v| v.eq_ignore_ascii_case("vscode"))
+        || env::var_os("VSCODE_GIT_IPC_HANDLE").is_some()
+    {
+        return Some(IdeKind::VsCode);
+    }
+
+    // JetBrains IDEs (IntelliJ, WebStorm, PyCharm, etc.) set TERMINAL_EMULATOR.
+    if env::var("TERMINAL_EMULATOR")
+        .map(|v| v.contains("JetBrains"))
+        .unwrap_or(false)
+    {
+        return Some(IdeKind::JetBrains);
+    }
+
+    None
+}
+
+/// Returns the detected IDE, falling back to VS Code if none is detected
+/// (VS Code is the most common and its `code` CLI is widely available).
+fn resolve_ide_kind() -> IdeKind {
+    detect_ide_kind().unwrap_or(IdeKind::VsCode)
 }
 
 fn resolve_vscode_executable() -> Result<PathBuf> {
-    let code_command = PathBuf::from("code");
-    if Command::new(&code_command)
+    let ide = resolve_ide_kind();
+    let cli = ide.cli_command();
+
+    // Try the CLI command first (works on all platforms).
+    let cli_path = PathBuf::from(cli);
+    if Command::new(&cli_path)
         .arg("--version")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
         .is_ok()
     {
-        return Ok(code_command);
+        return Ok(cli_path);
     }
 
-    let local_app_data = env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .ok_or_else(|| anyhow!("could not locate LOCALAPPDATA to find Code.exe"))?;
-    let fallback = local_app_data
-        .join("Programs")
-        .join("Microsoft VS Code")
-        .join("Code.exe");
-    if fallback.is_file() {
-        Ok(fallback)
-    } else {
-        bail!("could not find the VS Code CLI or Code.exe")
+    // Windows fallback: look for the .exe in LOCALAPPDATA.
+    if let Some(local_app_data) = env::var_os("LOCALAPPDATA").map(PathBuf::from) {
+        let exe_name = match ide {
+            IdeKind::Devin => "Devin.exe",
+            IdeKind::Cursor => "Cursor.exe",
+            _ => "Code.exe",
+        };
+        let program_dir = match ide {
+            IdeKind::Devin => "Devin",
+            IdeKind::Cursor => "Cursor",
+            _ => "Microsoft VS Code",
+        };
+        let fallback = local_app_data
+            .join("Programs")
+            .join(program_dir)
+            .join(exe_name);
+        if fallback.is_file() {
+            return Ok(fallback);
+        }
     }
+
+    // macOS fallback: look in /Applications.
+    let app_name = match ide {
+        IdeKind::Devin => "Devin.app",
+        IdeKind::Cursor => "Cursor.app",
+        _ => "Visual Studio Code.app",
+    };
+    let macos_fallback = PathBuf::from("/Applications")
+        .join(app_name)
+        .join("Contents")
+        .join("Resources")
+        .join("app")
+        .join("bin")
+        .join(cli);
+    if macos_fallback.is_file() {
+        return Ok(macos_fallback);
+    }
+
+    bail!("could not find the {} CLI ({})", ide.display_name(), cli)
 }
 
 fn build_vscode_file_uri(path: &std::path::Path, open_in_new_window: bool) -> String {
+    let ide = resolve_ide_kind();
+    let scheme = ide.uri_scheme();
     let encoded_path = encode_vscode_path(path);
+
+    // JetBrains uses a different URI format: jetbrains://idea/navigate/reference?path=...
+    if ide == IdeKind::JetBrains {
+        return format!("{}://idea/navigate/reference?path={}", scheme, encoded_path);
+    }
+
     if open_in_new_window {
-        format!("vscode://file/{}?windowId=_blank", encoded_path)
+        format!("{}://file/{}?windowId=_blank", scheme, encoded_path)
     } else {
-        format!("vscode://file/{}", encoded_path)
+        format!("{}://file/{}", scheme, encoded_path)
     }
 }
 
@@ -1663,9 +1836,11 @@ mod tests {
         let uri =
             build_vscode_file_uri(std::path::Path::new("C:/tmp/merge space/Cargo.toml"), true);
 
-        assert_eq!(
-            uri,
-            "vscode://file/C:/tmp/merge%20space/Cargo.toml?windowId=_blank"
+        // The URI scheme depends on the detected IDE.  We only assert the
+        // path encoding and the windowId query parameter here.
+        assert!(
+            uri.ends_with("://file/C:/tmp/merge%20space/Cargo.toml?windowId=_blank"),
+            "unexpected URI: {uri}"
         );
     }
 }
