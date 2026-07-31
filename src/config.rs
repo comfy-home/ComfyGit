@@ -1203,6 +1203,8 @@ pub struct RepoConfig {
     pub post_merge_source_branch: PostMergeSourceBranch,
     #[serde(default)]
     pub mirror_sync_after_merge: MirrorSyncAfterMerge,
+    #[serde(default)]
+    pub worktree_root: Option<String>,
 }
 
 /// When GitLab+GitHub mirror sync runs after ComfyGit merges an MR/PR.

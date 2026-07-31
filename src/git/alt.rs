@@ -640,12 +640,37 @@ fn resolve_remote_spec_for_repo(
         find_scope_for_cwd(project, project, cwd)?
     };
     let canonical_repo_root = best_effort_canonicalize(std::path::Path::new(repo_root));
+
+    // First try direct path match (normal case: cwd is inside the project root)
     let context = contexts.get(scope_index).or_else(|| {
         contexts.iter().find(|context| {
             best_effort_canonicalize(std::path::Path::new(&context.repo_root))
                 == canonical_repo_root
         })
     });
+
+    // Worktree fallback: if no direct match, the repo_root may be a linked
+    // worktree whose path differs from the project's configured local_root.
+    // Compare via git common dir instead.
+    let context = if context.is_some() {
+        context
+    } else {
+        let worktree_common_dir = crate::git::git_common_dir(std::path::Path::new(repo_root)).ok();
+        contexts.iter().find(|ctx| {
+            if best_effort_canonicalize(std::path::Path::new(&ctx.repo_root)) == canonical_repo_root
+            {
+                return true;
+            }
+            // Compare common dirs
+            if let Some(wt_common) = &worktree_common_dir
+                && let Ok(ctx_common) =
+                    crate::git::git_common_dir(std::path::Path::new(&ctx.repo_root))
+            {
+                return wt_common == &ctx_common;
+            }
+            false
+        })
+    };
 
     context
         .and_then(|context| context.remote_spec.clone())
