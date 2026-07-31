@@ -9,6 +9,10 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use crossterm::{
+    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
+    terminal::{disable_raw_mode, enable_raw_mode},
+};
 
 use crate::cli::best_effort_canonicalize;
 use crate::git::{GitCancellation, run_git_checked, run_git_checked_with_cancel};
@@ -300,7 +304,7 @@ pub(crate) fn run_wt_end(
     }
 
     // Determine the merge target (main branch)
-    let target_branch = custom_main_branch.map(str::to_string).unwrap_or_else(|| {
+    let mut target_branch = custom_main_branch.map(str::to_string).unwrap_or_else(|| {
         run_git_checked(&project_root_str, &["symbolic-ref", "--short", "HEAD"])
             .map(|s| s.trim().to_string())
             .unwrap_or_else(|_| "main".to_string())
@@ -312,6 +316,23 @@ pub(crate) fn run_wt_end(
     println!("  Worktree branch: \x1b[33m{current_branch}\x1b[0m");
     println!("  Merge target:    \x1b[33m{target_branch}\x1b[0m");
     println!();
+
+    // Offer the user a chance to change the merge target (X) or proceed (ENTER).
+    match prompt_merge_target_action(&target_branch)? {
+        MergeTargetAction::Proceed => {}
+        MergeTargetAction::ChangeTarget => {
+            target_branch = crate::git::prompt_target_branch_change(
+                &project_root_str,
+                current_branch,
+                &target_branch,
+                cancel.clone(),
+            )?;
+            println!();
+            println!("  New merge target: \x1b[33m{target_branch}\x1b[0m");
+            println!();
+        }
+        MergeTargetAction::Cancel => bail!("cancelled by user"),
+    }
 
     // Switch to the main worktree and merge
     println!("Switching to main worktree to merge...");
@@ -706,6 +727,48 @@ pub(crate) fn run_wt_cd_pwd(project_root: &str) -> Result<()> {
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+/// Action chosen by the user at the `cg wt end` merge-target prompt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MergeTargetAction {
+    Proceed,
+    ChangeTarget,
+    Cancel,
+}
+
+/// Shows a one-line prompt: "Press ENTER to merge into <target>, X to change
+/// target, or Ctrl+C to abort."  Reads a single keystroke in raw mode.
+fn prompt_merge_target_action(target_branch: &str) -> Result<MergeTargetAction> {
+    print!(
+        "\x1b[33mPress ENTER to merge into {target_branch}, X to change target, or Ctrl+C to abort\x1b[0m"
+    );
+    io::stdout().flush().context("failed to flush prompt")?;
+
+    enable_raw_mode().context("failed to enable raw mode")?;
+    let result = loop {
+        let Event::Key(key) = event::read().context("failed to read merge target input")? else {
+            continue;
+        };
+        if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+            continue;
+        }
+        match key.code {
+            KeyCode::Enter => break MergeTargetAction::Proceed,
+            KeyCode::Char('x' | 'X') if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                break MergeTargetAction::ChangeTarget;
+            }
+            KeyCode::Char('c' | 'C') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                break MergeTargetAction::Cancel;
+            }
+            KeyCode::Esc => break MergeTargetAction::Cancel,
+            _ => {}
+        }
+    };
+    disable_raw_mode().context("failed to disable raw mode")?;
+    // Move to the next line after the prompt.
+    println!();
+    Ok(result)
+}
 
 fn prompt_worktree_branch_name() -> Result<String> {
     print!("Branch name for the worktree: ");
