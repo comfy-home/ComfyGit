@@ -774,6 +774,53 @@ fn merge_pull_request(
     Ok(())
 }
 
+/// Result of a remote-only PR/MR merge (no local checkout/sync).
+#[allow(dead_code)]
+pub(crate) struct RemoteMergeResult {
+    pub target_branch: String,
+    pub source_branch: String,
+    pub delete_remote_on_merge: bool,
+    pub delete_local_after_merge: bool,
+}
+
+/// Merges a PR/MR via the forge API only — does NOT checkout or sync locally.
+/// The caller is responsible for syncing the target branch in the appropriate
+/// worktree afterwards.  Used by `cg wt end` (PR/MR variant) where the local
+/// sync must happen in the main worktree, not the linked worktree.
+pub(crate) fn merge_pull_request_remote_only(
+    repo_root: &str,
+    forge: ForgeKind,
+    pr_number: u64,
+) -> Result<RemoteMergeResult> {
+    let refreshed = fetch_pull_request(repo_root, forge, pr_number)?;
+    ensure_pull_request_mergeable(repo_root, forge, refreshed.number)?;
+
+    let policy = resolve_post_merge_source_branch(repo_root);
+    let subject = build_merge_commit_subject(refreshed.number);
+    let stdout = forge.merge_pull_request(
+        repo_root,
+        refreshed.number,
+        &subject,
+        &refreshed.source_branch,
+        policy.delete_remote_on_merge(),
+        policy.delete_local_after_merge(),
+    )?;
+    println!();
+    if stdout.is_empty() {
+        let label = forge.pull_request_label();
+        println!("{} #{} merged.", capitalize_first(label), refreshed.number);
+    } else {
+        println!("{}", stdout);
+    }
+
+    Ok(RemoteMergeResult {
+        target_branch: refreshed.target_branch,
+        source_branch: refreshed.source_branch,
+        delete_remote_on_merge: policy.delete_remote_on_merge(),
+        delete_local_after_merge: policy.delete_local_after_merge(),
+    })
+}
+
 fn switch_off_branch_for_deletion(
     repo_root: &str,
     branch_to_delete: &str,

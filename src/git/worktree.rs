@@ -321,8 +321,198 @@ pub(crate) fn run_wt_new(
     Ok(())
 }
 
-/// `cg wt end` — merge worktree branch back to main worktree + optional cleanup.
+/// `cg wt end` — merge worktree branch back to the main worktree via a PR/MR.
+///
+/// Creates a PR/MR from the worktree branch, merges it via the forge (GitHub/
+/// GitLab), then syncs the target branch in the main worktree.  After the
+/// merge, config paths are restored and the user is offered worktree/branch
+/// cleanup.
 pub(crate) fn run_wt_end(
+    _project_root: &Path,
+    _worktree_root: Option<&str>,
+    custom_main_branch: Option<&str>,
+    comfygitflow_enabled: bool,
+    cancel: Option<GitCancellation>,
+) -> Result<()> {
+    let cwd = std::env::current_dir().context("failed to read current directory")?;
+    let cwd = best_effort_canonicalize(&cwd);
+
+    if !is_linked_worktree(&cwd) {
+        bail!(
+            "cg wt end can only be run from inside a linked worktree; the current directory is the main worktree"
+        );
+    }
+
+    let worktree_toplevel = current_worktree_toplevel(&cwd)?;
+    let worktree_path = worktree_toplevel.display().to_string();
+    let main_root = main_worktree_root(&cwd)?;
+    let main_root_str = main_root.display().to_string();
+
+    // Get the current branch in the worktree
+    let current_branch = run_git_checked_with_cancel(
+        &worktree_path,
+        &["branch", "--show-current"],
+        cancel.clone(),
+    )?;
+    let current_branch = current_branch.trim();
+    if current_branch.is_empty() {
+        bail!("cannot run cg wt end from a detached HEAD");
+    }
+
+    // Ensure the worktree is clean
+    let status =
+        run_git_checked_with_cancel(&worktree_path, &["status", "--porcelain"], cancel.clone())?;
+    if !status.trim().is_empty() {
+        bail!(
+            "worktree has uncommitted changes; please commit or stash them before running cg wt end"
+        );
+    }
+
+    // Resolve the forge (GitHub/GitLab) for this repo.
+    let forge = crate::forge::require_forge_for_repo(&worktree_path)?;
+
+    println!();
+    println!("\x1b[36mEnding worktree via PR/MR\x1b[0m");
+    println!();
+    println!("  Worktree branch: \x1b[33m{current_branch}\x1b[0m");
+    println!();
+
+    // Step 1: Create the PR/MR from the worktree.
+    println!("Creating PR/MR from worktree branch \x1b[33m{current_branch}\x1b[0m...");
+    let created_pr = crate::git::run_pr_and_capture(
+        &worktree_path,
+        forge,
+        false,
+        custom_main_branch,
+        comfygitflow_enabled,
+        cancel.clone(),
+    )?;
+    println!();
+    println!(
+        "  PR/MR #{} created: \x1b[33m{}\x1b[0m",
+        created_pr.number, created_pr.url
+    );
+    println!(
+        "  Target branch:    \x1b[33m{}\x1b[0m",
+        created_pr.target_branch
+    );
+    println!();
+
+    // Step 2: Merge the PR/MR via the forge (remote merge only — no local
+    // checkout, which would fail in a linked worktree if the target branch
+    // is already checked out in the main worktree).
+    println!(
+        "Merging PR/MR #{} via {}...",
+        created_pr.number,
+        forge.display_name()
+    );
+    let merge_result =
+        crate::git::merge_pull_request_remote_only(&worktree_path, forge, created_pr.number)?;
+
+    // Step 3: Sync the target branch in the MAIN worktree.
+    println!();
+    println!(
+        "Syncing \x1b[33m{}\x1b[0m in the main worktree...",
+        merge_result.target_branch
+    );
+    crate::git::switch_to_existing_branch_after_merge(&main_root_str, &merge_result.target_branch)?;
+    crate::git::sync_current_branch(&main_root_str, cancel.clone())?;
+
+    // Step 4: Restore config paths in the main worktree.
+    let restored = crate::git::restore_paths_after_merge(&main_root, &worktree_toplevel)
+        .unwrap_or_else(|err| {
+            eprintln!(
+                "\x1b[33mwarning: failed to restore config paths after merge: {}\x1b[0m",
+                err
+            );
+            0
+        });
+    if restored > 0 {
+        run_git_checked_with_cancel(&main_root_str, &["add", "-A"], cancel.clone())?;
+        run_git_checked_with_cancel(
+            &main_root_str,
+            &[
+                "commit",
+                "-m",
+                "chore: restore relative paths after worktree merge",
+            ],
+            cancel.clone(),
+        )?;
+        println!("  Restored \x1b[33m{restored}\x1b[0m relative path(s) in config files.");
+    }
+
+    // Step 5: Delete the local source branch if policy says so.
+    if merge_result.delete_local_after_merge {
+        // The branch is checked out in the worktree, so we can't delete it
+        // while the worktree exists.  We'll handle it after worktree removal.
+    }
+
+    // Step 6: Mirror sync.
+    if let Err(error) =
+        crate::workflow::cli_sync::run_mirror_sync_after_comfygit_merge(&main_root_str)
+    {
+        eprintln!("Warning: mirror sync after merge failed: {error:#}. Run `cg sync` to retry.");
+    }
+
+    println!();
+    println!(
+        "\x1b[32mPR/MR #{} merged, synced \x1b[33m{}\x1b[0m\x1b[32m, and restored config paths.\x1b[0m",
+        created_pr.number, merge_result.target_branch
+    );
+    println!();
+
+    // Step 7: Offer worktree + branch cleanup.
+    println!("Remove the worktree now? [Y/n]");
+    print!("> ");
+    io::stdout().flush().context("failed to flush prompt")?;
+    let mut answer = String::new();
+    io::stdin()
+        .read_line(&mut answer)
+        .context("failed to read response")?;
+    let answer = answer.trim().to_ascii_lowercase();
+
+    if answer.is_empty() || answer == "y" || answer == "yes" {
+        println!();
+        println!("Removing worktree at \x1b[33m{worktree_path}\x1b[0m...");
+        run_git_checked_with_cancel(
+            &main_root_str,
+            &["worktree", "remove", &worktree_path],
+            cancel.clone(),
+        )?;
+
+        // Now that the worktree is gone, we can delete the local branch.
+        if merge_result.delete_local_after_merge {
+            run_git_checked(&main_root_str, &["branch", "-d", current_branch])?;
+            println!("\x1b[32mBranch {current_branch} deleted.\x1b[0m");
+        } else {
+            println!("Delete the merged branch \x1b[33m{current_branch}\x1b[0m? [y/N]");
+            print!("> ");
+            io::stdout().flush().context("failed to flush prompt")?;
+            let mut branch_answer = String::new();
+            io::stdin()
+                .read_line(&mut branch_answer)
+                .context("failed to read response")?;
+            let branch_answer = branch_answer.trim().to_ascii_lowercase();
+            if branch_answer == "y" || branch_answer == "yes" {
+                run_git_checked(&main_root_str, &["branch", "-d", current_branch])?;
+                println!("\x1b[32mBranch {current_branch} deleted.\x1b[0m");
+            }
+        }
+
+        println!();
+        println!("\x1b[32mWorktree removed.\x1b[0m");
+    } else {
+        println!();
+        println!("Worktree kept at \x1b[33m{worktree_path}\x1b[0m");
+    }
+
+    println!();
+    Ok(())
+}
+
+/// `cg wt end local` — merge worktree branch back to main worktree via a local
+/// merge (no PR/MR).  Optionally remove the worktree and delete the branch.
+pub(crate) fn run_wt_end_local(
     _project_root: &Path,
     _worktree_root: Option<&str>,
     _custom_main_branch: Option<&str>,

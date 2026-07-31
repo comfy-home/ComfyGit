@@ -443,6 +443,14 @@ fn dispatch_args(args: &[String]) -> Result<StartupMode> {
             run_wt_new_command()?;
             Ok(StartupMode::Handled)
         }
+        [command, action, local_action]
+            if is_wt_command(command)
+                && is_wt_end_action(action)
+                && is_local_merge_action(local_action) =>
+        {
+            run_wt_end_local_command()?;
+            Ok(StartupMode::Handled)
+        }
         [command, action] if is_wt_command(command) && is_wt_end_action(action) => {
             run_wt_end_command()?;
             Ok(StartupMode::Handled)
@@ -1027,7 +1035,10 @@ fn print_usage() {
         "  cg wt new                  Create a new worktree with an interactive branch name prompt"
     );
     println!(
-        "  cg wt end                  Merge the worktree's branch back to main and optionally remove it"
+        "  cg wt end                  Create a PR/MR, merge it, sync main worktree, optionally remove worktree"
+    );
+    println!(
+        "  cg wt end local            Merge the worktree's branch back to main locally (no PR/MR)"
     );
     println!(
         "  cg wt list                 List all worktrees with branch, path, and clean/dirty status"
@@ -1086,9 +1097,13 @@ fn print_wt_usage() {
     println!(
         "  cg wt new                 Create a new worktree with an interactive branch name prompt"
     );
-    println!("  cg wt end                 Merge the worktree's branch back to the main worktree");
+    println!("  cg wt end                 Create a PR/MR, merge it via the forge, sync the main");
+    println!("                             worktree, and optionally remove the worktree");
     println!(
-        "                             and optionally remove the worktree and delete the branch"
+        "  cg wt end local           Merge the worktree's branch back to the main worktree locally"
+    );
+    println!(
+        "                             (no PR/MR) and optionally remove the worktree and delete the branch"
     );
     println!("                             Press X at the prompt to change the merge target");
     println!(
@@ -1112,6 +1127,7 @@ fn print_wt_usage() {
     println!("            wt: wt | worktree | wtree");
     println!("            new: new | add | create");
     println!("            end: end | done | close | merge | mrg | mg");
+    println!("            local: local | ll | loc | lcl");
     println!("            list: list | ls | l");
     println!("            remove: remove | rm | del | delete");
     println!("            status: status | st | info");
@@ -1215,6 +1231,19 @@ fn run_wt_end_command() -> Result<()> {
     let ctx = load_wt_project_context()?;
     with_cli_git_cancellation(|cancel| {
         crate::git::run_wt_end(
+            &ctx.project_root,
+            ctx.worktree_root.as_deref(),
+            ctx.custom_main_branch.as_deref(),
+            ctx.comfygitflow_enabled,
+            cancel,
+        )
+    })
+}
+
+fn run_wt_end_local_command() -> Result<()> {
+    let ctx = load_wt_project_context()?;
+    with_cli_git_cancellation(|cancel| {
+        crate::git::run_wt_end_local(
             &ctx.project_root,
             ctx.worktree_root.as_deref(),
             ctx.custom_main_branch.as_deref(),

@@ -1509,11 +1509,12 @@ fn load_target_branches(
     let lines: Vec<&str> = output.lines().collect();
 
     for line in lines.iter().skip(start_line - 1).take(5) {
-        // Remove the "* " or "  " prefix and clean up the branch name
-        let branch_name = line
-            .trim_start_matches("* ")
-            .trim_start_matches("  ")
-            .trim();
+        // `git branch` prefixes each line with a 2-char status column:
+        //   "* " — current branch
+        //   "  " — normal branch
+        //   "+ " — branch checked out in another worktree
+        // Strip the prefix and any remaining whitespace.
+        let branch_name = line.trim_start_matches(['*', '+', ' ']).trim();
         if !branch_name.is_empty() && branch_name != current_branch {
             branches.push(branch_name.to_string());
         }
