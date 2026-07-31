@@ -431,6 +431,10 @@ fn dispatch_args(args: &[String]) -> Result<StartupMode> {
             Ok(StartupMode::Handled)
         }
         // Worktree commands: cg wt
+        [command, action] if is_wt_command(command) && is_help(action) => {
+            print_wt_usage();
+            Ok(StartupMode::Handled)
+        }
         [command] if is_wt_command(command) => {
             run_wt_status_command()?;
             Ok(StartupMode::Handled)
@@ -1061,6 +1065,56 @@ fn print_usage() {
     println!("             3 → Bump & Commit & Push");
     println!("             4 → Branch & Bump & Commit (will prompt for branch name, local only)");
     println!("             5 → Branch & Bump & Commit & Push (will prompt for branch name)");
+    println!(" ");
+}
+
+fn print_wt_usage() {
+    println!(" ");
+    println!(
+        "ComfyGit {} | © 2026 ComfyHome™ | support@comfyhome.io",
+        APP_VERSION
+    );
+    println!(" ");
+    println!("\x1b[36mWorktree Commands\x1b[0m");
+    println!(" ");
+    println!("  ↓ Command ↓               ↓ Description ↓");
+    println!(" ");
+    println!(
+        "  cg wt                     Show worktree status (current, main, and linked worktrees)"
+    );
+    println!("  cg wt status              Same as `cg wt` — show current worktree info");
+    println!(
+        "  cg wt new                 Create a new worktree with an interactive branch name prompt"
+    );
+    println!("  cg wt end                 Merge the worktree's branch back to the main worktree");
+    println!(
+        "                             and optionally remove the worktree and delete the branch"
+    );
+    println!("                             Press X at the prompt to change the merge target");
+    println!(
+        "  cg wt list                List all worktrees with branch, path, and clean/dirty status"
+    );
+    println!(
+        "  cg wt cd                  Interactively choose a worktree and print its path (for shell cd)"
+    );
+    println!("  cg wt remove              Interactively choose and remove a linked worktree");
+    println!(" ");
+    println!("  \x1b[2mPath convention:\x1b[0m");
+    println!("    <parent_of_project>/<project_name>.worktrees/<branch_name>");
+    println!("    Configurable via \x1b[33mworktree_root\x1b[0m in RepoConfig");
+    println!(" ");
+    println!("  \x1b[2mConfig path adjustment:\x1b[0m");
+    println!("    Relative paths in Cargo.toml, pyproject.toml, package.json, and tsconfig.json");
+    println!("    that point outside the project root are automatically adjusted when creating");
+    println!("    a worktree and restored when merging back via `cg wt end`.");
+    println!(" ");
+    println!("          synonyms:");
+    println!("            wt: wt | worktree | wtree");
+    println!("            new: new | add | create");
+    println!("            end: end | done | close | merge | mrg | mg");
+    println!("            list: list | ls | l");
+    println!("            remove: remove | rm | del | delete");
+    println!("            status: status | st | info");
     println!(" ");
 }
 
