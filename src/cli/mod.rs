@@ -430,6 +430,39 @@ fn dispatch_args(args: &[String]) -> Result<StartupMode> {
             crate::git::run_new(Some(action), Some(option))?;
             Ok(StartupMode::Handled)
         }
+        // Worktree commands: cg wt
+        [command] if is_wt_command(command) => {
+            run_wt_status_command()?;
+            Ok(StartupMode::Handled)
+        }
+        [command, action] if is_wt_command(command) && is_wt_new_action(action) => {
+            run_wt_new_command()?;
+            Ok(StartupMode::Handled)
+        }
+        [command, action] if is_wt_command(command) && is_wt_end_action(action) => {
+            run_wt_end_command()?;
+            Ok(StartupMode::Handled)
+        }
+        [command, action] if is_wt_command(command) && is_wt_list_action(action) => {
+            run_wt_list_command()?;
+            Ok(StartupMode::Handled)
+        }
+        [command, action] if is_wt_command(command) && is_wt_cd_action(action) => {
+            run_wt_cd_command()?;
+            Ok(StartupMode::Handled)
+        }
+        [command, action] if is_wt_command(command) && is_wt_cd_pwd_action(action) => {
+            run_wt_cd_pwd_command()?;
+            Ok(StartupMode::Handled)
+        }
+        [command, action] if is_wt_command(command) && is_wt_remove_action(action) => {
+            run_wt_remove_command()?;
+            Ok(StartupMode::Handled)
+        }
+        [command, action] if is_wt_command(command) && is_wt_status_action(action) => {
+            run_wt_status_command()?;
+            Ok(StartupMode::Handled)
+        }
         [command] if is_toppicks_command(command) => {
             run_toppicks()?;
             Ok(StartupMode::Handled)
@@ -800,6 +833,38 @@ fn is_new_command(value: &str) -> bool {
     matches!(value, "new")
 }
 
+fn is_wt_command(value: &str) -> bool {
+    matches!(value, "wt" | "worktree" | "wtree")
+}
+
+fn is_wt_new_action(value: &str) -> bool {
+    matches!(value, "new" | "add" | "create")
+}
+
+fn is_wt_end_action(value: &str) -> bool {
+    matches!(value, "end" | "done" | "close" | "merge" | "mrg" | "mg")
+}
+
+fn is_wt_list_action(value: &str) -> bool {
+    matches!(value, "list" | "ls" | "l")
+}
+
+fn is_wt_cd_action(value: &str) -> bool {
+    matches!(value, "cd")
+}
+
+fn is_wt_cd_pwd_action(value: &str) -> bool {
+    matches!(value, "cd-pwd" | "cdpwd")
+}
+
+fn is_wt_remove_action(value: &str) -> bool {
+    matches!(value, "remove" | "rm" | "del" | "delete")
+}
+
+fn is_wt_status_action(value: &str) -> bool {
+    matches!(value, "status" | "st" | "info")
+}
+
 fn is_toppicks_command(value: &str) -> bool {
     matches!(value, "toppicks" | "tp" | "topp")
 }
@@ -949,6 +1014,32 @@ fn print_usage() {
     println!("            reroot: rrt");
     println!("            rebase: rebase | force | rbs");
     println!(" ");
+    println!("  WORKTREE COMMANDS:");
+    println!(" ");
+    println!(
+        "  cg wt                      Show worktree status (current, main, and linked worktrees)"
+    );
+    println!(
+        "  cg wt new                  Create a new worktree with an interactive branch name prompt"
+    );
+    println!(
+        "  cg wt end                  Merge the worktree's branch back to main and optionally remove it"
+    );
+    println!(
+        "  cg wt list                 List all worktrees with branch, path, and clean/dirty status"
+    );
+    println!(
+        "  cg wt cd                   Interactively choose a worktree and print its path (for shell cd)"
+    );
+    println!("  cg wt remove               Interactively choose and remove a linked worktree");
+    println!("          synonyms:");
+    println!("            wt: wt | worktree | wtree");
+    println!("            new: new | add | create");
+    println!("            end: end | done | close | merge | mrg | mg");
+    println!("            list: list | ls | l");
+    println!("            remove: remove | rm | del | delete");
+    println!("            status: status | st | info");
+    println!(" ");
     println!("  BUMPING COMMANDS:");
     println!(" ");
     println!(
@@ -1017,6 +1108,91 @@ fn print_branch_status() -> Result<()> {
     println!("{}", render_branch_tree(diagram.as_ref()));
     println!();
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Worktree command dispatch
+// ---------------------------------------------------------------------------
+
+struct WtProjectContext {
+    project_name: String,
+    project_root: PathBuf,
+    worktree_root: Option<String>,
+    custom_main_branch: Option<String>,
+    comfygitflow_enabled: bool,
+}
+
+fn load_wt_project_context() -> Result<WtProjectContext> {
+    let config = load_config()?;
+    let cwd =
+        best_effort_canonicalize(&env::current_dir().context("failed to read current directory")?);
+    let project = find_project_for_cwd(&config.projects, &cwd)?;
+    let project_root = best_effort_canonicalize(&project_root(project)?);
+    let worktree_root = project
+        .repo
+        .as_ref()
+        .and_then(|repo| repo.worktree_root.clone());
+    let custom_main_branch = project
+        .repo
+        .as_ref()
+        .filter(|repo| repo.has_custom_main_branch)
+        .map(|repo| repo.custom_main_branch.clone())
+        .filter(|branch| !branch.trim().is_empty());
+    let comfygitflow_enabled = project.comfygitflow_enabled;
+    Ok(WtProjectContext {
+        project_name: project.name.clone(),
+        project_root,
+        worktree_root,
+        custom_main_branch,
+        comfygitflow_enabled,
+    })
+}
+
+fn run_wt_new_command() -> Result<()> {
+    let ctx = load_wt_project_context()?;
+    crate::git::run_wt_new(
+        &ctx.project_name,
+        &ctx.project_root,
+        ctx.worktree_root.as_deref(),
+    )
+}
+
+fn run_wt_end_command() -> Result<()> {
+    let ctx = load_wt_project_context()?;
+    with_cli_git_cancellation(|cancel| {
+        crate::git::run_wt_end(
+            &ctx.project_root,
+            ctx.worktree_root.as_deref(),
+            ctx.custom_main_branch.as_deref(),
+            ctx.comfygitflow_enabled,
+            cancel,
+        )
+    })
+}
+
+fn run_wt_list_command() -> Result<()> {
+    let ctx = load_wt_project_context()?;
+    crate::git::run_wt_list(&ctx.project_root.display().to_string())
+}
+
+fn run_wt_status_command() -> Result<()> {
+    let ctx = load_wt_project_context()?;
+    crate::git::run_wt_status(&ctx.project_root.display().to_string())
+}
+
+fn run_wt_remove_command() -> Result<()> {
+    let ctx = load_wt_project_context()?;
+    crate::git::run_wt_remove(&ctx.project_root.display().to_string())
+}
+
+fn run_wt_cd_command() -> Result<()> {
+    let ctx = load_wt_project_context()?;
+    crate::git::run_wt_cd_pwd(&ctx.project_root.display().to_string())
+}
+
+fn run_wt_cd_pwd_command() -> Result<()> {
+    let ctx = load_wt_project_context()?;
+    crate::git::run_wt_cd_pwd(&ctx.project_root.display().to_string())
 }
 
 fn run_branch_up() -> Result<()> {
@@ -1110,11 +1286,17 @@ fn load_active_branch_cli_context() -> Result<ActiveBranchCliContext> {
         .get(scope_index)
         .or_else(|| git_contexts.first())
         .ok_or_else(|| anyhow!("git scope metadata is unavailable for the current branch view"))?;
-    let current_branch = current_branch_with_cancel(&context.repo_root, None)?;
+
+    // Use the actual git worktree root (from `git rev-parse --show-toplevel`)
+    // for branch operations. This works correctly both in the main worktree
+    // and in linked worktrees, where the toplevel differs from the project's
+    // configured local_root.
+    let actual_repo_root = current_git_repo_root(&cwd)?;
+    let current_branch = current_branch_with_cancel(&actual_repo_root, None)?;
 
     Ok(ActiveBranchCliContext {
         project_name: project.name.clone(),
-        repo_root: context.repo_root.clone(),
+        repo_root: actual_repo_root,
         main_branch_name: context.main_branch_name.clone(),
         comfygitflow_enabled: project.comfygitflow_enabled,
         current_branch,
@@ -3597,7 +3779,7 @@ pub(crate) fn find_repo_custom_main_branch(repo_root: &str) -> Option<String> {
 
     for project in &config.projects {
         if let Some(repo) = project.repo.as_ref()
-            && best_effort_canonicalize(&repo_root_path(repo)) == canonical_repo_root
+            && repo_path_matches(&repo_root_path(repo), &canonical_repo_root, repo_root)
             && let Some(branch) = repo.custom_main_branch_name()
         {
             return Some(branch.to_string());
@@ -3605,7 +3787,7 @@ pub(crate) fn find_repo_custom_main_branch(repo_root: &str) -> Option<String> {
 
         for branch in &project.branches {
             if let Some(repo) = branch.repo.as_ref()
-                && best_effort_canonicalize(&repo_root_path(repo)) == canonical_repo_root
+                && repo_path_matches(&repo_root_path(repo), &canonical_repo_root, repo_root)
                 && let Some(branch_name) = repo.custom_main_branch_name()
             {
                 return Some(branch_name.to_string());
@@ -3626,20 +3808,41 @@ fn find_repo_comfygitflow_enabled(repo_root: &str) -> bool {
 
     for project in &config.projects {
         if let Some(repo) = project.repo.as_ref()
-            && best_effort_canonicalize(&repo_root_path(repo)) == canonical_repo_root
+            && repo_path_matches(&repo_root_path(repo), &canonical_repo_root, repo_root)
         {
             return project.comfygitflow_enabled;
         }
 
         for branch in &project.branches {
             if let Some(repo) = branch.repo.as_ref()
-                && best_effort_canonicalize(&repo_root_path(repo)) == canonical_repo_root
+                && repo_path_matches(&repo_root_path(repo), &canonical_repo_root, repo_root)
             {
                 return project.comfygitflow_enabled;
             }
         }
     }
 
+    false
+}
+
+/// Checks if a configured repo path matches the actual repo root, accounting
+/// for linked worktrees.  First tries direct canonical path comparison, then
+/// falls back to comparing git common dirs.
+fn repo_path_matches(
+    configured_root: &Path,
+    canonical_actual_root: &Path,
+    actual_root: &str,
+) -> bool {
+    let canonical_configured = best_effort_canonicalize(configured_root);
+    if canonical_configured == canonical_actual_root {
+        return true;
+    }
+    // Worktree fallback: compare git common dirs
+    if let Ok(configured_common) = crate::git::git_common_dir(&canonical_configured)
+        && let Ok(actual_common) = crate::git::git_common_dir(Path::new(actual_root))
+    {
+        return configured_common == actual_common;
+    }
     false
 }
 
@@ -3653,7 +3856,7 @@ pub(crate) fn mirror_sync_after_merge_for_repo(
     for project in projects {
         if project.project_type == ProjectType::AllInOne {
             if let Some(repo) = project.repo.as_ref()
-                && best_effort_canonicalize(&repo_root_path(repo)) == canonical_repo_root
+                && repo_path_matches(&repo_root_path(repo), &canonical_repo_root, repo_root)
             {
                 return project.mirror_sync_after_merge_for_scope(0);
             }
@@ -3662,7 +3865,7 @@ pub(crate) fn mirror_sync_after_merge_for_repo(
 
         for (index, branch) in project.branches.iter().enumerate() {
             if let Some(repo) = branch.repo.as_ref()
-                && best_effort_canonicalize(&repo_root_path(repo)) == canonical_repo_root
+                && repo_path_matches(&repo_root_path(repo), &canonical_repo_root, repo_root)
             {
                 let scope_index = find_scope_for_cwd(project, project, cwd).unwrap_or(index);
                 return project.mirror_sync_after_merge_for_scope(scope_index);
@@ -3670,7 +3873,7 @@ pub(crate) fn mirror_sync_after_merge_for_repo(
         }
 
         if let Some(repo) = project.repo.as_ref()
-            && best_effort_canonicalize(&repo_root_path(repo)) == canonical_repo_root
+            && repo_path_matches(&repo_root_path(repo), &canonical_repo_root, repo_root)
         {
             let scope_index = find_scope_for_cwd(project, project, cwd).unwrap_or(0);
             return project.mirror_sync_after_merge_for_scope(scope_index);
@@ -3690,7 +3893,7 @@ pub(crate) fn post_merge_source_branch_for_repo(
     for project in projects {
         if project.project_type == ProjectType::AllInOne {
             if let Some(repo) = project.repo.as_ref()
-                && best_effort_canonicalize(&repo_root_path(repo)) == canonical_repo_root
+                && repo_path_matches(&repo_root_path(repo), &canonical_repo_root, repo_root)
             {
                 return project.post_merge_source_branch_for_scope(0);
             }
@@ -3699,7 +3902,7 @@ pub(crate) fn post_merge_source_branch_for_repo(
 
         for (index, branch) in project.branches.iter().enumerate() {
             if let Some(repo) = branch.repo.as_ref()
-                && best_effort_canonicalize(&repo_root_path(repo)) == canonical_repo_root
+                && repo_path_matches(&repo_root_path(repo), &canonical_repo_root, repo_root)
             {
                 let scope_index = find_scope_for_cwd(project, project, cwd).unwrap_or(index);
                 return project.post_merge_source_branch_for_scope(scope_index);
@@ -3707,7 +3910,7 @@ pub(crate) fn post_merge_source_branch_for_repo(
         }
 
         if let Some(repo) = project.repo.as_ref()
-            && best_effort_canonicalize(&repo_root_path(repo)) == canonical_repo_root
+            && repo_path_matches(&repo_root_path(repo), &canonical_repo_root, repo_root)
         {
             let scope_index = find_scope_for_cwd(project, project, cwd).unwrap_or(0);
             return project.post_merge_source_branch_for_scope(scope_index);
@@ -3779,6 +3982,7 @@ pub(crate) fn find_project_for_cwd<'a>(
     projects: &'a [ProjectConfig],
     cwd: &Path,
 ) -> Result<&'a ProjectConfig> {
+    let cwd = best_effort_canonicalize(cwd);
     let mut matches = projects
         .iter()
         .filter_map(|project| {
@@ -3788,6 +3992,24 @@ pub(crate) fn find_project_for_cwd<'a>(
         })
         .filter(|(_, root)| cwd.starts_with(root))
         .collect::<Vec<_>>();
+
+    // Worktree fallback: if no direct path match, the cwd may be inside a
+    // linked worktree whose path is outside the project's configured root.
+    // Resolve the main worktree root via `git rev-parse --git-common-dir`
+    // and try matching that against configured project roots.
+    if matches.is_empty()
+        && let Ok(main_root) = crate::git::main_worktree_root(&cwd)
+    {
+        matches = projects
+            .iter()
+            .filter_map(|project| {
+                project_root(project)
+                    .ok()
+                    .map(|root| (project, best_effort_canonicalize(&root)))
+            })
+            .filter(|(_, root)| main_root.starts_with(root))
+            .collect::<Vec<_>>();
+    }
 
     if matches.is_empty() {
         bail!(
