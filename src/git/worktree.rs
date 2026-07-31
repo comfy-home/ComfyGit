@@ -264,9 +264,9 @@ pub(crate) fn run_wt_new(
 
 /// `cg wt end` — merge worktree branch back to main worktree + optional cleanup.
 pub(crate) fn run_wt_end(
-    project_root: &Path,
+    _project_root: &Path,
     _worktree_root: Option<&str>,
-    custom_main_branch: Option<&str>,
+    _custom_main_branch: Option<&str>,
     _comfygitflow_enabled: bool,
     cancel: Option<GitCancellation>,
 ) -> Result<()> {
@@ -281,7 +281,12 @@ pub(crate) fn run_wt_end(
 
     let worktree_toplevel = current_worktree_toplevel(&cwd)?;
     let worktree_path = worktree_toplevel.display().to_string();
-    let project_root_str = project_root.display().to_string();
+
+    // Use the actual git main worktree (the one containing `.git`), NOT the
+    // configured `project_root`.  The configured root may itself be a linked
+    // worktree on a different branch — operating on it would be wrong.
+    let main_root = main_worktree_root(&cwd)?;
+    let main_root_str = main_root.display().to_string();
 
     // Get the current branch in the worktree
     let current_branch = run_git_checked_with_cancel(
@@ -303,12 +308,14 @@ pub(crate) fn run_wt_end(
         );
     }
 
-    // Determine the merge target (main branch)
-    let mut target_branch = custom_main_branch.map(str::to_string).unwrap_or_else(|| {
-        run_git_checked(&project_root_str, &["symbolic-ref", "--short", "HEAD"])
-            .map(|s| s.trim().to_string())
-            .unwrap_or_else(|_| "main".to_string())
-    });
+    // Determine the merge target: whatever branch is currently checked out
+    // in the main worktree.  The user explicitly chose it by checking it out,
+    // and the X shortcut lets them change it if needed.  We do NOT use
+    // `custom_main_branch` here — that config is for PR operations, not
+    // worktree merges.
+    let mut target_branch = run_git_checked(&main_root_str, &["symbolic-ref", "--short", "HEAD"])
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|_| "main".to_string());
 
     println!();
     println!("\x1b[36mEnding worktree\x1b[0m");
@@ -322,7 +329,7 @@ pub(crate) fn run_wt_end(
         MergeTargetAction::Proceed => {}
         MergeTargetAction::ChangeTarget => {
             target_branch = crate::git::prompt_target_branch_change(
-                &project_root_str,
+                &main_root_str,
                 current_branch,
                 &target_branch,
                 cancel.clone(),
@@ -334,35 +341,30 @@ pub(crate) fn run_wt_end(
         MergeTargetAction::Cancel => bail!("cancelled by user"),
     }
 
-    // Switch to the main worktree and merge
-    println!("Switching to main worktree to merge...");
-    run_git_checked_with_cancel(
-        &project_root_str,
-        &["checkout", &target_branch],
-        cancel.clone(),
-    )?;
-
-    // Check if main worktree is clean
-    let main_status = run_git_checked_with_cancel(
-        &project_root_str,
-        &["status", "--porcelain"],
-        cancel.clone(),
-    )?;
+    // Check if main worktree is clean BEFORE checking out the target branch.
+    // Checking after the checkout can produce false positives: if the current
+    // branch and the target branch have different `.gitignore` rules, files
+    // that were ignored on the current branch (e.g. build artifacts) may show
+    // up as untracked on the target branch.
+    let main_status =
+        run_git_checked_with_cancel(&main_root_str, &["status", "--porcelain"], cancel.clone())?;
     if !main_status.trim().is_empty() {
-        // Switch back to a branch in the worktree before bailing
-        let _ = run_git_checked_with_cancel(
-            &worktree_path,
-            &["checkout", current_branch],
-            cancel.clone(),
-        );
         bail!(
             "main worktree has uncommitted changes; please commit or stash them before running cg wt end"
         );
     }
 
+    // Switch to the main worktree and merge
+    println!("Switching to main worktree to merge...");
+    run_git_checked_with_cancel(
+        &main_root_str,
+        &["checkout", &target_branch],
+        cancel.clone(),
+    )?;
+
     println!("Merging \x1b[33m{current_branch}\x1b[0m into \x1b[33m{target_branch}\x1b[0m...");
     let merge_result = run_git_checked_with_cancel(
-        &project_root_str,
+        &main_root_str,
         &["merge", "--no-ff", current_branch],
         cancel.clone(),
     );
@@ -376,7 +378,7 @@ pub(crate) fn run_wt_end(
             // Restore relative paths in config files that were adjusted for
             // the worktree.  The merged files contain worktree-relative paths
             // which must be recomputed relative to the main worktree.
-            let restored = crate::git::restore_paths_after_merge(project_root, &worktree_toplevel)
+            let restored = crate::git::restore_paths_after_merge(&main_root, &worktree_toplevel)
                 .unwrap_or_else(|err| {
                     eprintln!(
                         "\x1b[33mwarning: failed to restore config paths after merge: {}\x1b[0m",
@@ -385,9 +387,9 @@ pub(crate) fn run_wt_end(
                     0
                 });
             if restored > 0 {
-                run_git_checked_with_cancel(&project_root_str, &["add", "-A"], cancel.clone())?;
+                run_git_checked_with_cancel(&main_root_str, &["add", "-A"], cancel.clone())?;
                 run_git_checked_with_cancel(
-                    &project_root_str,
+                    &main_root_str,
                     &[
                         "commit",
                         "-m",
@@ -401,11 +403,8 @@ pub(crate) fn run_wt_end(
         }
         Err(error) => {
             // Abort the merge
-            let _ = run_git_checked_with_cancel(
-                &project_root_str,
-                &["merge", "--abort"],
-                cancel.clone(),
-            );
+            let _ =
+                run_git_checked_with_cancel(&main_root_str, &["merge", "--abort"], cancel.clone());
             // Switch back
             let _ = run_git_checked_with_cancel(
                 &worktree_path,
@@ -434,7 +433,7 @@ pub(crate) fn run_wt_end(
         println!();
         println!("Removing worktree at \x1b[33m{worktree_path}\x1b[0m...");
         run_git_checked_with_cancel(
-            &project_root_str,
+            &main_root_str,
             &["worktree", "remove", &worktree_path],
             cancel.clone(),
         )?;
@@ -450,7 +449,7 @@ pub(crate) fn run_wt_end(
         let branch_answer = branch_answer.trim().to_ascii_lowercase();
 
         if branch_answer == "y" || branch_answer == "yes" {
-            run_git_checked(&project_root_str, &["branch", "-d", current_branch])?;
+            run_git_checked(&main_root_str, &["branch", "-d", current_branch])?;
             println!("\x1b[32mBranch {current_branch} deleted.\x1b[0m");
         }
 
