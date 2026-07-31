@@ -334,6 +334,22 @@ pub(crate) fn run_wt_end(
         MergeTargetAction::Cancel => bail!("cancelled by user"),
     }
 
+    // Check if main worktree is clean BEFORE checking out the target branch.
+    // Checking after the checkout can produce false positives: if the current
+    // branch and the target branch have different `.gitignore` rules, files
+    // that were ignored on the current branch (e.g. build artifacts) may show
+    // up as untracked on the target branch.
+    let main_status = run_git_checked_with_cancel(
+        &project_root_str,
+        &["status", "--porcelain"],
+        cancel.clone(),
+    )?;
+    if !main_status.trim().is_empty() {
+        bail!(
+            "main worktree has uncommitted changes; please commit or stash them before running cg wt end"
+        );
+    }
+
     // Switch to the main worktree and merge
     println!("Switching to main worktree to merge...");
     run_git_checked_with_cancel(
@@ -341,24 +357,6 @@ pub(crate) fn run_wt_end(
         &["checkout", &target_branch],
         cancel.clone(),
     )?;
-
-    // Check if main worktree is clean
-    let main_status = run_git_checked_with_cancel(
-        &project_root_str,
-        &["status", "--porcelain"],
-        cancel.clone(),
-    )?;
-    if !main_status.trim().is_empty() {
-        // Switch back to a branch in the worktree before bailing
-        let _ = run_git_checked_with_cancel(
-            &worktree_path,
-            &["checkout", current_branch],
-            cancel.clone(),
-        );
-        bail!(
-            "main worktree has uncommitted changes; please commit or stash them before running cg wt end"
-        );
-    }
 
     println!("Merging \x1b[33m{current_branch}\x1b[0m into \x1b[33m{target_branch}\x1b[0m...");
     let merge_result = run_git_checked_with_cancel(
