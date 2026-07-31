@@ -867,6 +867,7 @@ impl ProjectEditDialog {
                 custom_main_branch: existing_repo.custom_main_branch,
                 post_merge_source_branch: existing_repo.post_merge_source_branch,
                 mirror_sync_after_merge: existing_repo.mirror_sync_after_merge,
+                worktree_root: existing_repo.worktree_root,
             });
         } else {
             project.repo = None;
