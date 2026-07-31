@@ -1399,7 +1399,7 @@ fn normalize_lookup(value: &str) -> String {
     value.trim().to_ascii_lowercase()
 }
 
-fn prompt_target_branch_change(
+pub(crate) fn prompt_target_branch_change(
     repo_root: &str,
     current_branch: &str,
     current_target: &str,
