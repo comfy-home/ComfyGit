@@ -151,6 +151,65 @@ fn worktree_is_dirty(path: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Returns a human-readable summary of why a worktree is dirty, or `None`
+/// when it is clean.  Parses `git status --porcelain` output into counts by
+/// category (modified, staged, untracked, deleted, etc.).
+fn worktree_dirty_reason(path: &str) -> Option<String> {
+    let output = run_git_checked(path, &["status", "--porcelain"]).ok()?;
+    let lines: Vec<&str> = output.lines().filter(|l| !l.trim().is_empty()).collect();
+    if lines.is_empty() {
+        return None;
+    }
+
+    let mut modified = 0u32;
+    let mut staged = 0u32;
+    let mut untracked = 0u32;
+    let mut deleted = 0u32;
+
+    for line in &lines {
+        let bytes = line.as_bytes();
+        let index = bytes.first().copied().unwrap_or(b' ');
+        let worktree = bytes.get(1).copied().unwrap_or(b' ');
+
+        if index == b'?' && worktree == b'?' {
+            untracked += 1;
+        } else if index == b'!' && worktree == b'!' {
+            // ignored — not counted
+        } else {
+            if index != b' ' && index != b'?' {
+                staged += 1;
+            }
+            if worktree == b'M' {
+                modified += 1;
+            }
+            if worktree == b'D' || index == b'D' {
+                deleted += 1;
+            }
+        }
+    }
+
+    let mut parts: Vec<String> = Vec::new();
+    if staged > 0 {
+        parts.push(format!("{staged} staged"));
+    }
+    if modified > 0 {
+        parts.push(format!("{modified} modified"));
+    }
+    if deleted > 0 {
+        parts.push(format!("{deleted} deleted"));
+    }
+    if untracked > 0 {
+        parts.push(format!("{untracked} untracked"));
+    }
+
+    if parts.is_empty() {
+        // Fallback: just show the raw line count.
+        Some(format!("{} change(s)", lines.len()))
+    } else {
+        Some(parts.join(", "))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Worktree path calculation
 // ---------------------------------------------------------------------------
@@ -489,9 +548,12 @@ pub(crate) fn run_wt_list(project_root: &str) -> Result<()> {
         };
         let path_display = wt.path.clone();
         let status = if worktree_is_dirty(&wt.path) {
-            "\x1b[33mdirty\x1b[0m"
+            let reason = worktree_dirty_reason(&wt.path)
+                .map(|r| format!(" \x1b[2m({r})\x1b[0m"))
+                .unwrap_or_default();
+            format!("\x1b[33mdirty\x1b[0m{reason}")
         } else {
-            "\x1b[32mclean\x1b[0m"
+            "\x1b[32mclean\x1b[0m".to_string()
         };
 
         println!("  {:<30} {:<60} {}", branch_display, path_display, status);
@@ -518,6 +580,7 @@ pub(crate) fn run_wt_status(project_root: &str) -> Result<()> {
     .unwrap_or_else(|_| "(detached)".to_string());
 
     let is_dirty = worktree_is_dirty(&current_toplevel.display().to_string());
+    let dirty_reason = worktree_dirty_reason(&current_toplevel.display().to_string());
 
     println!();
     println!("\x1b[36mWorktree Status\x1b[0m");
@@ -528,11 +591,16 @@ pub(crate) fn run_wt_status(project_root: &str) -> Result<()> {
     );
     println!("  Branch:           \x1b[33m{current_branch}\x1b[0m");
     println!(
-        "  Status:           {}",
+        "  Status:           {}{}",
         if is_dirty {
             "\x1b[33mdirty\x1b[0m"
         } else {
             "\x1b[32mclean\x1b[0m"
+        },
+        if let Some(reason) = &dirty_reason {
+            format!(" \x1b[2m({reason})\x1b[0m")
+        } else {
+            String::new()
         }
     );
     println!("  Main worktree:    \x1b[33m{}\x1b[0m", main_root.display());
@@ -564,9 +632,12 @@ pub(crate) fn run_wt_status(project_root: &str) -> Result<()> {
                     .unwrap_or_else(|| "(detached)".to_string())
             };
             let status = if worktree_is_dirty(&wt.path) {
-                "\x1b[33mdirty\x1b[0m"
+                let reason = worktree_dirty_reason(&wt.path)
+                    .map(|r| format!(" \x1b[2m({r})\x1b[0m"))
+                    .unwrap_or_default();
+                format!("\x1b[33mdirty\x1b[0m{reason}")
             } else {
-                "\x1b[32mclean\x1b[0m"
+                "\x1b[32mclean\x1b[0m".to_string()
             };
             println!("    {branch_display:<30} {} {}", wt.path, status);
         }
@@ -601,9 +672,12 @@ pub(crate) fn run_wt_remove(project_root: &str) -> Result<()> {
             .clone()
             .unwrap_or_else(|| "(detached)".to_string());
         let status = if worktree_is_dirty(&wt.path) {
-            " \x1b[33m(dirty)\x1b[0m"
+            let reason = worktree_dirty_reason(&wt.path)
+                .map(|r| format!(": {r}"))
+                .unwrap_or_default();
+            format!(" \x1b[33m(dirty{reason})\x1b[0m")
         } else {
-            ""
+            String::new()
         };
         println!("  {}. {} — {}{}", i + 1, branch_display, wt.path, status);
     }
