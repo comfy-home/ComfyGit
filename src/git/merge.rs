@@ -34,8 +34,13 @@ const PR_LIST_LIMIT: usize = 200;
 const FORGE_LINK_LABEL_GITHUB: &str = "<GitHub>";
 const FORGE_LINK_LABEL_GITLAB: &str = "<GitLab>";
 const CONFLICT_FIX_PREFIX: &str = "Fix: ";
-const CONFLICT_LINKS_TOTAL_WIDTH: usize =
-    CONFLICT_FIX_PREFIX.len() + FORGE_LINK_LABEL_GITHUB.len() + 1 + "<VSCode>".len();
+/// Computes the visible width of the conflict links column at runtime,
+/// based on the detected IDE's link label.  This must match the actual
+/// rendered content to avoid column misalignment.
+fn conflict_links_visible_width() -> usize {
+    let ide_label = format!("<{}>", resolve_ide_kind().link_label());
+    CONFLICT_FIX_PREFIX.len() + FORGE_LINK_LABEL_GITHUB.len() + 1 + ide_label.len()
+}
 fn forge_link_label(forge: ForgeKind) -> &'static str {
     match forge {
         ForgeKind::GitHub => FORGE_LINK_LABEL_GITHUB,
@@ -602,7 +607,7 @@ fn render_pull_request_title_cell(
         return Ok(());
     };
 
-    let label_width = CONFLICT_LINKS_TOTAL_WIDTH;
+    let label_width = conflict_links_visible_width();
     if width <= label_width + 2 {
         queue!(
             stdout,
@@ -631,10 +636,10 @@ fn render_pull_request_title_cell(
         Print(
             prepared_vscode_workspace
                 .map(|prepared| {
-                    let label = format!("<{}>", resolve_ide_kind().display_name());
+                    let label = format!("<{}>", resolve_ide_kind().link_label());
                     format_terminal_hyperlink(&prepared.open_uri, &label)
                 })
-                .unwrap_or_else(|| { format!("<{}>", resolve_ide_kind().display_name()) })
+                .unwrap_or_else(|| { format!("<{}>", resolve_ide_kind().link_label()) })
         ),
         SetForegroundColor(row_color)
     )
@@ -941,6 +946,11 @@ fn prepare_vscode_merge_workspace(
         cancel.clone(),
     )?;
 
+    eprintln!(
+        "[merge] preparing conflict workspace: git merge --no-commit --no-ff {} in {}",
+        target_ref,
+        worktree_root.display()
+    );
     let merge_output = Command::new("git")
         .current_dir(&worktree_root)
         .args(["merge", "--no-commit", "--no-ff", &target_ref])
@@ -1273,35 +1283,61 @@ impl IdeKind {
             IdeKind::JetBrains => "JetBrains IDE",
         }
     }
+
+    /// The short label used inside `<...>` for terminal hyperlinks.
+    /// Must NOT contain spaces — some terminals split OSC 8 hyperlinks
+    /// at whitespace, breaking the link into separate clickable regions.
+    fn link_label(self) -> &'static str {
+        match self {
+            IdeKind::VsCode => "VSCode",
+            IdeKind::Devin => "Devin",
+            IdeKind::Cursor => "Cursor",
+            IdeKind::JetBrains => "JetBrains",
+        }
+    }
 }
 
 /// Detects which IDE the terminal is running inside, if any.
 ///
-/// VSCode forks (Devin/Windsurf, Cursor) set `VSCODE_*` env vars but not
-/// `TERM_PROGRAM=vscode`.  We distinguish them by checking for their
-/// specific env vars and CLI commands.
+/// VSCode forks (Devin/Windsurf, Cursor) set `VSCODE_*` env vars but tmux
+/// strips most of them and overwrites `TERM_PROGRAM=tmux`.  The most
+/// reliable indicators that survive through tmux are:
+///   - `CHROME_DESKTOP` (e.g. `devin-desktop.desktop`, `cursor.desktop`)
+///   - `VSCODE_GIT_ASKPASS_MAIN` (path contains `devin-desktop` / `cursor`)
+///   - `VSCODE_GIT_IPC_HANDLE` (present for any VSCode fork, but not for JetBrains)
 fn detect_ide_kind() -> Option<IdeKind> {
-    // Devin (formerly Windsurf) — sets VSCODE_* vars and has a devin-desktop CLI.
-    // The config directory is ~/.config/Devin or ~/.config/Windsurf.
-    if env::var("VSCODE_CODE_CACHE_PATH")
-        .map(|path| path.contains("Devin") || path.contains("Windsurf"))
-        .unwrap_or(false)
-    {
+    // Gather all available env var hints.
+    let chrome_desktop = env::var("CHROME_DESKTOP").unwrap_or_default();
+    let askpass_main = env::var("VSCODE_GIT_ASKPASS_MAIN").unwrap_or_default();
+    let code_cache_path = env::var("VSCODE_CODE_CACHE_PATH").unwrap_or_default();
+    let combined = format!("{chrome_desktop} {askpass_main} {code_cache_path}");
+
+    // Devin (formerly Windsurf)
+    if combined.contains("Devin") || combined.contains("devin-desktop") {
+        return Some(IdeKind::Devin);
+    }
+    if combined.contains("Windsurf") || combined.contains("windsurf") {
         return Some(IdeKind::Devin);
     }
 
-    // Cursor — sets VSCODE_* vars and has a cursor CLI.
-    if env::var("VSCODE_CODE_CACHE_PATH")
-        .map(|path| path.contains("Cursor"))
-        .unwrap_or(false)
-    {
-        return Some(IdeKind::Cursor);
+    // Cursor
+    if combined.contains("Cursor") || combined.contains("cursor") {
+        // Avoid false positive: "cursor" is a common word, so only match
+        // if it appears in the CHROME_DESKTOP or askpass path context.
+        if chrome_desktop.contains("cursor") || askpass_main.contains("cursor") {
+            return Some(IdeKind::Cursor);
+        }
     }
 
-    // Standard VS Code.
-    if env::var("TERM_PROGRAM").is_ok_and(|v| v.eq_ignore_ascii_case("vscode"))
-        || env::var_os("VSCODE_GIT_IPC_HANDLE").is_some()
-    {
+    // Standard VS Code — check TERM_PROGRAM (not tmux) or VSCODE_GIT_IPC_HANDLE.
+    let term_program = env::var("TERM_PROGRAM").unwrap_or_default();
+    if term_program.eq_ignore_ascii_case("vscode") {
+        return Some(IdeKind::VsCode);
+    }
+    // VSCODE_GIT_IPC_HANDLE is set by any VSCode fork (including Devin/Cursor),
+    // but at this point we've already ruled out Devin and Cursor, so if it's
+    // present it must be plain VS Code.
+    if env::var_os("VSCODE_GIT_IPC_HANDLE").is_some() {
         return Some(IdeKind::VsCode);
     }
 
@@ -1319,7 +1355,15 @@ fn detect_ide_kind() -> Option<IdeKind> {
 /// Returns the detected IDE, falling back to VS Code if none is detected
 /// (VS Code is the most common and its `code` CLI is widely available).
 fn resolve_ide_kind() -> IdeKind {
-    detect_ide_kind().unwrap_or(IdeKind::VsCode)
+    let ide = detect_ide_kind().unwrap_or(IdeKind::VsCode);
+    eprintln!(
+        "[ide-detect] VSCODE_CODE_CACHE_PATH={:?} TERM_PROGRAM={:?} TERMINAL_EMULATOR={:?} => {:?}",
+        env::var("VSCODE_CODE_CACHE_PATH").ok(),
+        env::var("TERM_PROGRAM").ok(),
+        env::var("TERMINAL_EMULATOR").ok(),
+        ide
+    );
+    ide
 }
 
 fn resolve_vscode_executable() -> Result<PathBuf> {
@@ -1805,7 +1849,7 @@ mod tests {
         };
 
         let title_width = 40usize;
-        let label_width = CONFLICT_LINKS_TOTAL_WIDTH;
+        let label_width = conflict_links_visible_width();
         let title_visible = fit_cell(&entry.title, title_width - label_width - 2);
         let rendered_width = pad_cell(&title_visible, title_width - label_width - 2)
             .chars()
@@ -1842,5 +1886,160 @@ mod tests {
             uri.ends_with("://file/C:/tmp/merge%20space/Cargo.toml?windowId=_blank"),
             "unexpected URI: {uri}"
         );
+    }
+
+    #[test]
+    fn detect_ide_kind_detects_all_ides() {
+        // Run all detection cases in a single test to avoid env var races
+        // between parallel tests.
+
+        // Devin via CHROME_DESKTOP (survives tmux)
+        unsafe {
+            env::set_var("CHROME_DESKTOP", "devin-desktop.desktop");
+            env::set_var(
+                "VSCODE_GIT_ASKPASS_MAIN",
+                "/usr/share/devin-desktop/resources/app/extensions/git/dist/askpass-main.js",
+            );
+            env::remove_var("VSCODE_CODE_CACHE_PATH");
+            env::remove_var("TERM_PROGRAM");
+            env::remove_var("VSCODE_GIT_IPC_HANDLE");
+            env::remove_var("TERMINAL_EMULATOR");
+        }
+        assert_eq!(
+            detect_ide_kind(),
+            Some(IdeKind::Devin),
+            "Devin not detected via CHROME_DESKTOP"
+        );
+
+        // Devin via VSCODE_CODE_CACHE_PATH (when not behind tmux)
+        unsafe {
+            env::remove_var("CHROME_DESKTOP");
+            env::remove_var("VSCODE_GIT_ASKPASS_MAIN");
+            env::set_var(
+                "VSCODE_CODE_CACHE_PATH",
+                "/home/user/.config/Devin/CachedData/abc",
+            );
+        }
+        assert_eq!(
+            detect_ide_kind(),
+            Some(IdeKind::Devin),
+            "Devin not detected via VSCODE_CODE_CACHE_PATH"
+        );
+
+        // Windsurf (also maps to Devin)
+        unsafe {
+            env::set_var(
+                "VSCODE_CODE_CACHE_PATH",
+                "/home/user/.config/Windsurf/CachedData/abc",
+            );
+        }
+        assert_eq!(
+            detect_ide_kind(),
+            Some(IdeKind::Devin),
+            "Windsurf not detected as Devin"
+        );
+
+        // Cursor via CHROME_DESKTOP (survives tmux)
+        unsafe {
+            env::set_var("CHROME_DESKTOP", "cursor.desktop");
+            env::set_var(
+                "VSCODE_GIT_ASKPASS_MAIN",
+                "/usr/share/cursor/resources/app/extensions/git/dist/askpass-main.js",
+            );
+            env::remove_var("VSCODE_CODE_CACHE_PATH");
+        }
+        assert_eq!(
+            detect_ide_kind(),
+            Some(IdeKind::Cursor),
+            "Cursor not detected via CHROME_DESKTOP"
+        );
+
+        // VS Code via TERM_PROGRAM (not behind tmux)
+        unsafe {
+            env::remove_var("CHROME_DESKTOP");
+            env::remove_var("VSCODE_GIT_ASKPASS_MAIN");
+            env::remove_var("VSCODE_CODE_CACHE_PATH");
+            env::set_var("TERM_PROGRAM", "vscode");
+        }
+        assert_eq!(
+            detect_ide_kind(),
+            Some(IdeKind::VsCode),
+            "VS Code not detected via TERM_PROGRAM"
+        );
+
+        // VS Code via VSCODE_GIT_IPC_HANDLE (behind tmux, no CHROME_DESKTOP)
+        unsafe {
+            env::remove_var("TERM_PROGRAM");
+            env::set_var(
+                "VSCODE_GIT_IPC_HANDLE",
+                "/run/user/1000/vscode-git-abc.sock",
+            );
+        }
+        assert_eq!(
+            detect_ide_kind(),
+            Some(IdeKind::VsCode),
+            "VS Code not detected via VSCODE_GIT_IPC_HANDLE"
+        );
+
+        // JetBrains via TERMINAL_EMULATOR
+        unsafe {
+            env::remove_var("VSCODE_GIT_IPC_HANDLE");
+            env::set_var("TERMINAL_EMULATOR", "JetBrains-JediTerm");
+        }
+        assert_eq!(
+            detect_ide_kind(),
+            Some(IdeKind::JetBrains),
+            "JetBrains not detected"
+        );
+
+        // Cleanup
+        unsafe {
+            env::remove_var("CHROME_DESKTOP");
+            env::remove_var("VSCODE_GIT_ASKPASS_MAIN");
+            env::remove_var("VSCODE_CODE_CACHE_PATH");
+            env::remove_var("TERM_PROGRAM");
+            env::remove_var("VSCODE_GIT_IPC_HANDLE");
+            env::remove_var("TERMINAL_EMULATOR");
+        }
+    }
+
+    #[test]
+    fn ide_kind_link_labels_have_no_spaces() {
+        // OSC 8 hyperlinks can break at spaces in some terminals (e.g. Devin).
+        // Ensure all link labels are space-free.
+        for &ide in &[
+            IdeKind::VsCode,
+            IdeKind::Devin,
+            IdeKind::Cursor,
+            IdeKind::JetBrains,
+        ] {
+            assert!(
+                !ide.link_label().contains(' '),
+                "link label {:?} for {:?} contains a space",
+                ide.link_label(),
+                ide
+            );
+        }
+    }
+
+    #[test]
+    fn build_vscode_file_uri_uses_correct_scheme_for_devin() {
+        unsafe {
+            env::set_var("CHROME_DESKTOP", "devin-desktop.desktop");
+            env::remove_var("VSCODE_CODE_CACHE_PATH");
+            env::remove_var("TERM_PROGRAM");
+            env::remove_var("VSCODE_GIT_IPC_HANDLE");
+            env::remove_var("TERMINAL_EMULATOR");
+        }
+
+        let uri = build_vscode_file_uri(std::path::Path::new("/tmp/test.rs"), false);
+        assert!(
+            uri.starts_with("devin://file/"),
+            "expected devin:// scheme, got: {uri}"
+        );
+
+        unsafe {
+            env::remove_var("CHROME_DESKTOP");
+        }
     }
 }
