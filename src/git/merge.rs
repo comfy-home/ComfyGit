@@ -217,7 +217,11 @@ fn prompt_pull_request_selection(
                 Err(error) => {
                     prepared_vscode_workspace = None;
                     if message.is_none() {
-                        message = Some(format!("VS Code link unavailable: {}", error));
+                        message = Some(format!(
+                            "{} link unavailable: {}",
+                            resolve_ide_kind().display_name(),
+                            error
+                        ));
                     }
                 }
             }
@@ -400,12 +404,17 @@ fn prompt_pull_request_selection(
                             Ok(prepared) => {
                                 prepared_vscode_workspace = Some(prepared.clone());
                                 format!(
-                                    "Opened VS Code merge workspace for PR #{} at {}. Resolve conflicts there, save, then return here and press R to commit, push, and refresh.",
+                                    "Opened {} merge workspace for PR #{} at {}. Resolve conflicts there, save, then return here and press R to commit, push, and refresh.",
+                                    resolve_ide_kind().display_name(),
                                     entry.number,
                                     prepared.worktree_root.display()
                                 )
                             }
-                            Err(error) => format!("VS Code merge workspace failed: {}", error),
+                            Err(error) => format!(
+                                "{} merge workspace failed: {}",
+                                resolve_ide_kind().display_name(),
+                                error
+                            ),
                         });
                         needs_render = true;
                     }
@@ -421,8 +430,9 @@ fn prompt_pull_request_selection(
                         let entry = entries[selected].clone();
                         if !entry.is_mergeable() {
                             message = Some(format!(
-                                "PR #{} cannot be merged yet. Press V to open a VS Code merge workspace, or R to reload after resolving it.",
-                                entry.number
+                                "PR #{} cannot be merged yet. Press V to open a {} merge workspace, or R to reload after resolving it.",
+                                entry.number,
+                                resolve_ide_kind().display_name()
                             ));
                             needs_render = true;
                             continue;
@@ -468,7 +478,7 @@ fn render_pull_request_picker(
         Print("Choose a pull request to merge:\r\n"),
         MoveToColumn(0),
         Print(
-            "Use Up/Down or Tab to select. Press Enter to merge, R to reload, V to open the VS Code merge tool for the selected conflicting PR. Esc exits.\r\n",
+            format!("Use Up/Down or Tab to select. Press Enter to merge, R to reload, V to open the {} merge tool for the selected conflicting PR. Esc exits.\r\n", resolve_ide_kind().display_name()),
         ),
         MoveToColumn(0),
         Print(format_table_border(&layout)),
@@ -1355,15 +1365,7 @@ fn detect_ide_kind() -> Option<IdeKind> {
 /// Returns the detected IDE, falling back to VS Code if none is detected
 /// (VS Code is the most common and its `code` CLI is widely available).
 fn resolve_ide_kind() -> IdeKind {
-    let ide = detect_ide_kind().unwrap_or(IdeKind::VsCode);
-    eprintln!(
-        "[ide-detect] VSCODE_CODE_CACHE_PATH={:?} TERM_PROGRAM={:?} TERMINAL_EMULATOR={:?} => {:?}",
-        env::var("VSCODE_CODE_CACHE_PATH").ok(),
-        env::var("TERM_PROGRAM").ok(),
-        env::var("TERMINAL_EMULATOR").ok(),
-        ide
-    );
-    ide
+    detect_ide_kind().unwrap_or(IdeKind::VsCode)
 }
 
 fn resolve_vscode_executable() -> Result<PathBuf> {
@@ -1505,7 +1507,21 @@ fn pad_cell(value: &str, width: usize) -> String {
 }
 
 fn format_terminal_hyperlink(url: &str, label: &str) -> String {
+    // tmux doesn't support OSC 8 hyperlinks — clicking shows "No matching results".
+    // Fall back to plain text when inside tmux; the user can press V to launch the IDE.
+    if is_running_inside_tmux() {
+        return label.to_string();
+    }
     format!("\x1b]8;;{}\x1b\\{}\x1b]8;;\x1b\\", url, label)
+}
+
+/// Returns true if the terminal is running inside tmux.
+/// tmux strips most VSCODE_* env vars and doesn't support OSC 8 hyperlinks.
+fn is_running_inside_tmux() -> bool {
+    env::var_os("TMUX").is_some()
+        || env::var("TERM_PROGRAM")
+            .map(|v| v == "tmux")
+            .unwrap_or(false)
 }
 
 fn clear_pull_request_picker(rendered_lines: &mut usize) -> Result<()> {
