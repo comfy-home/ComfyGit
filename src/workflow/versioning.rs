@@ -109,7 +109,8 @@ impl VersionScheme {
     pub fn validate(self, value: &str) -> Result<(), String> {
         match self {
             VersionScheme::SemVer => {
-                let (core, suffix) = split_semver(value);
+                let (semver_part, _custom) = split_custom_suffix(value);
+                let (core, suffix) = split_semver(&semver_part);
                 validate_parts(&core, &[PartRule::Any, PartRule::Any, PartRule::Any])?;
                 if let Some(suffix) = suffix {
                     validate_semver_suffix(&suffix)?;
@@ -180,6 +181,39 @@ enum PartRule {
     Digits(usize),
     Month,
     Day,
+}
+
+/// Splits a version string into its standard SemVer part and an optional
+/// custom suffix (everything after the first `:` or `--`).
+///
+/// The custom suffix is a ComfyGit extension used by forked projects to mark
+/// custom changes.  Both `:` and `--` are accepted as delimiters:
+///   `0.8.0-alpha.0:comfy`  and  `0.8.0-alpha.0--comfy`  are equivalent.
+///
+/// `--` (double dash) is safe to use as a delimiter because it never appears
+/// in valid standard SemVer — a double dash would mean an empty pre-release
+/// identifier, which is invalid per the spec.
+///
+/// The custom suffix is preserved as-is during validation and bumping — it is
+/// never modified, stripped, or dropped regardless of the bump action.
+///
+/// Examples:
+///   "0.8.0-alpha.0-comfy"    -> ("0.8.0-alpha.0-comfy", None)
+///   "0.8.0-alpha.0:comfy"    -> ("0.8.0-alpha.0", ":comfy")
+///   "0.8.0:comfy-alpha.0"    -> ("0.8.0", ":comfy-alpha.0")
+///   "0.8.0-alpha.0--comfy"   -> ("0.8.0-alpha.0", "--comfy")
+///   "0.8.0--comfy-alpha.0"   -> ("0.8.0", "--comfy-alpha.0")
+fn split_custom_suffix(value: &str) -> (String, Option<String>) {
+    // `:` takes precedence as the most explicit delimiter.
+    if let Some(pos) = value.find(':') {
+        return (value[..pos].to_string(), Some(value[pos..].to_string()));
+    }
+    // `--` (double dash) — never appears in valid standard SemVer, so it's
+    // safe to use as a custom suffix delimiter.
+    if let Some(pos) = value.find("--") {
+        return (value[..pos].to_string(), Some(value[pos..].to_string()));
+    }
+    (value.to_string(), None)
 }
 
 /// Splits a SemVer string into its numeric core and optional suffix
@@ -330,7 +364,10 @@ fn validate_parts(value: &str, rules: &[PartRule]) -> Result<(), String> {
 }
 
 fn bump_semver(value: &str, action: BumpAction) -> Result<String, String> {
-    let (core, suffix) = split_semver(value);
+    // Split off the custom suffix (everything after `:`) first — it is
+    // preserved as-is and never modified by the bump.
+    let (semver_part, custom_suffix) = split_custom_suffix(value);
+    let (core, suffix) = split_semver(&semver_part);
     let parts = parse_numeric_parts(&core)?;
     let [major, minor, patch]: [u32; 3] = parts
         .try_into()
@@ -345,11 +382,17 @@ fn bump_semver(value: &str, action: BumpAction) -> Result<String, String> {
 
     // Per SemVer convention: major/minor bumps drop the pre-release suffix
     // (a new release cycle starts clean).  Patch bumps preserve it.
-    let result = match (action, suffix) {
+    // The custom suffix (`:...`) is always preserved regardless of bump type.
+    let semver_result = match (action, suffix) {
         (BumpAction::Patch, Some(suffix)) => {
             format!("{}.{}.{}{}", bumped[0], bumped[1], bumped[2], suffix)
         }
         _ => format!("{}.{}.{}", bumped[0], bumped[1], bumped[2]),
+    };
+
+    let result = match custom_suffix {
+        Some(custom) => format!("{}{}", semver_result, custom),
+        None => semver_result,
     };
 
     Ok(result)
@@ -567,7 +610,11 @@ mod tests {
 
     #[test]
     fn semver_accepts_prerelease_suffix() {
-        assert!(VersionScheme::SemVer.validate("0.8.0-alpha.0-comfy").is_ok());
+        assert!(
+            VersionScheme::SemVer
+                .validate("0.8.0-alpha.0-comfy")
+                .is_ok()
+        );
         assert!(VersionScheme::SemVer.validate("1.0.0-beta").is_ok());
         assert!(VersionScheme::SemVer.validate("1.0.0-alpha.1").is_ok());
         assert!(VersionScheme::SemVer.validate("1.0.0-rc.2").is_ok());
@@ -576,8 +623,16 @@ mod tests {
     #[test]
     fn semver_accepts_build_metadata() {
         assert!(VersionScheme::SemVer.validate("1.0.0+build.42").is_ok());
-        assert!(VersionScheme::SemVer.validate("1.0.0+20130313144700").is_ok());
-        assert!(VersionScheme::SemVer.validate("1.0.0-beta+exp.sha.5114f85").is_ok());
+        assert!(
+            VersionScheme::SemVer
+                .validate("1.0.0+20130313144700")
+                .is_ok()
+        );
+        assert!(
+            VersionScheme::SemVer
+                .validate("1.0.0-beta+exp.sha.5114f85")
+                .is_ok()
+        );
     }
 
     #[test]
@@ -669,5 +724,162 @@ mod tests {
             split_semver("1.0.0-beta+exp.sha"),
             ("1.0.0".to_string(), Some("-beta+exp.sha".to_string()))
         );
+    }
+
+    // --- Custom suffix (`:...`) tests ---
+
+    #[test]
+    fn split_custom_suffix_separates_at_colon() {
+        use super::split_custom_suffix;
+        assert_eq!(
+            split_custom_suffix("0.8.0-alpha.0-comfy"),
+            ("0.8.0-alpha.0-comfy".to_string(), None)
+        );
+        assert_eq!(
+            split_custom_suffix("0.8.0-alpha.0:comfy"),
+            ("0.8.0-alpha.0".to_string(), Some(":comfy".to_string()))
+        );
+        assert_eq!(
+            split_custom_suffix("0.8.0:comfy-alpha.0"),
+            ("0.8.0".to_string(), Some(":comfy-alpha.0".to_string()))
+        );
+    }
+
+    #[test]
+    fn semver_accepts_custom_suffix_after_prerelease() {
+        assert!(
+            VersionScheme::SemVer
+                .validate("0.8.0-alpha.0:comfy")
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn semver_accepts_custom_suffix_without_prerelease() {
+        assert!(
+            VersionScheme::SemVer
+                .validate("0.8.0:comfy-alpha.0")
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn semver_patch_bump_preserves_custom_suffix() {
+        let today = NaiveDate::from_ymd_opt(2026, 8, 3).unwrap();
+        let bumped = VersionScheme::SemVer
+            .bump("0.8.0-alpha.0:comfy", BumpAction::Patch, today)
+            .unwrap();
+        assert_eq!(bumped, "0.8.1-alpha.0:comfy");
+    }
+
+    #[test]
+    fn semver_minor_bump_drops_prerelease_but_keeps_custom_suffix() {
+        let today = NaiveDate::from_ymd_opt(2026, 8, 3).unwrap();
+        let bumped = VersionScheme::SemVer
+            .bump("0.8.0-alpha.0:comfy", BumpAction::Minor, today)
+            .unwrap();
+        assert_eq!(bumped, "0.9.0:comfy");
+    }
+
+    #[test]
+    fn semver_major_bump_drops_prerelease_but_keeps_custom_suffix() {
+        let today = NaiveDate::from_ymd_opt(2026, 8, 3).unwrap();
+        let bumped = VersionScheme::SemVer
+            .bump("0.8.0-alpha.0:comfy", BumpAction::Major, today)
+            .unwrap();
+        assert_eq!(bumped, "1.0.0:comfy");
+    }
+
+    #[test]
+    fn semver_patch_bump_with_custom_suffix_no_prerelease() {
+        let today = NaiveDate::from_ymd_opt(2026, 8, 3).unwrap();
+        let bumped = VersionScheme::SemVer
+            .bump("0.8.0:comfy-alpha.0", BumpAction::Patch, today)
+            .unwrap();
+        assert_eq!(bumped, "0.8.1:comfy-alpha.0");
+    }
+
+    // --- Custom suffix with `--` delimiter (synonym for `:`) ---
+
+    #[test]
+    fn split_custom_suffix_separates_at_double_dash() {
+        use super::split_custom_suffix;
+        assert_eq!(
+            split_custom_suffix("0.8.0-alpha.0--comfy"),
+            ("0.8.0-alpha.0".to_string(), Some("--comfy".to_string()))
+        );
+        assert_eq!(
+            split_custom_suffix("0.8.0--comfy-alpha.0"),
+            ("0.8.0".to_string(), Some("--comfy-alpha.0".to_string()))
+        );
+    }
+
+    #[test]
+    fn split_custom_suffix_does_not_split_single_dash() {
+        use super::split_custom_suffix;
+        // Single dash is a standard SemVer pre-release separator, not a
+        // custom suffix delimiter.
+        assert_eq!(
+            split_custom_suffix("0.8.0-alpha.0-comfy"),
+            ("0.8.0-alpha.0-comfy".to_string(), None)
+        );
+        assert_eq!(
+            split_custom_suffix("1.0.0-alpha-beta"),
+            ("1.0.0-alpha-beta".to_string(), None)
+        );
+    }
+
+    #[test]
+    fn semver_accepts_double_dash_custom_suffix_after_prerelease() {
+        assert!(
+            VersionScheme::SemVer
+                .validate("0.8.0-alpha.0--comfy")
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn semver_accepts_double_dash_custom_suffix_without_prerelease() {
+        assert!(
+            VersionScheme::SemVer
+                .validate("0.8.0--comfy-alpha.0")
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn semver_patch_bump_preserves_double_dash_custom_suffix() {
+        let today = NaiveDate::from_ymd_opt(2026, 8, 3).unwrap();
+        let bumped = VersionScheme::SemVer
+            .bump("0.8.0-alpha.0--comfy", BumpAction::Patch, today)
+            .unwrap();
+        assert_eq!(bumped, "0.8.1-alpha.0--comfy");
+    }
+
+    #[test]
+    fn semver_minor_bump_drops_prerelease_but_keeps_double_dash_custom_suffix() {
+        let today = NaiveDate::from_ymd_opt(2026, 8, 3).unwrap();
+        let bumped = VersionScheme::SemVer
+            .bump("0.8.0-alpha.0--comfy", BumpAction::Minor, today)
+            .unwrap();
+        assert_eq!(bumped, "0.9.0--comfy");
+    }
+
+    #[test]
+    fn semver_major_bump_drops_prerelease_but_keeps_double_dash_custom_suffix() {
+        let today = NaiveDate::from_ymd_opt(2026, 8, 3).unwrap();
+        let bumped = VersionScheme::SemVer
+            .bump("0.8.0-alpha.0--comfy", BumpAction::Major, today)
+            .unwrap();
+        assert_eq!(bumped, "1.0.0--comfy");
+    }
+
+    #[test]
+    fn semver_patch_bump_with_double_dash_custom_suffix_no_prerelease() {
+        let today = NaiveDate::from_ymd_opt(2026, 8, 3).unwrap();
+        let bumped = VersionScheme::SemVer
+            .bump("0.8.0--comfy-alpha.0", BumpAction::Patch, today)
+            .unwrap();
+        assert_eq!(bumped, "0.8.1--comfy-alpha.0");
     }
 }
