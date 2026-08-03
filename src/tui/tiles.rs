@@ -85,7 +85,17 @@ fn render_semver_tile(
     let tile_style = tile_style(tile.selected);
     let content_width = area.width.saturating_sub(2) as usize;
     let right_width = content_width.saturating_sub(SEMVER_LEFT_WIDTH + 1);
-    let parts = split_semver(&tile.preview_version);
+
+    // Strip any pre-release/build/custom suffix so the tile's 3 rows show
+    // only the numeric MAJOR.MINOR.PATCH core.  The suffix is appended to
+    // the tile name so it's still visible.
+    let (core, suffix) = strip_version_suffix(&tile.preview_version);
+    let parts = split_semver(&core);
+    let display_name = match &suffix {
+        Some(s) => format!("{} {}", tile.name, s),
+        None => tile.name.clone(),
+    };
+
     let button_slots = space_evenly_positions(right_width, &[6, 6, 5]);
     let button_positions = [
         button_slots[0] + 1,
@@ -104,7 +114,7 @@ fn render_semver_tile(
         format!(
             "║{:^5}│{:^right_width$}║",
             " ver.",
-            tile.name,
+            display_name,
             right_width = right_width
         ),
         format!(
@@ -188,11 +198,19 @@ fn render_calver_tile(
     let content_width = area.width.saturating_sub(2) as usize;
     let detail_width = content_width.saturating_sub(CALVER_ACTION_WIDTH + 1);
 
+    // Strip any suffix from the version for the spaced display, and append
+    // it to the tile name so it's still visible.
+    let (core, suffix) = strip_version_suffix(&tile.preview_version);
+    let display_name = match &suffix {
+        Some(s) => format!("{} {}", tile.name, s),
+        None => tile.name.clone(),
+    };
+
     let rows = [
         format!("╔{}╗", "═".repeat(content_width)),
         format!(
             "║{:^content_width$}║",
-            tile.name,
+            display_name,
             content_width = content_width
         ),
         format!("║{}║", dot_fill(content_width)),
@@ -221,7 +239,7 @@ fn render_calver_tile(
         ),
         format!(
             "║{:^content_width$}║",
-            spaced_version(&tile.preview_version),
+            spaced_version(&core),
             content_width = content_width
         ),
         format!("╚{}╝", "═".repeat(content_width)),
@@ -475,6 +493,64 @@ fn split_semver(version: &str) -> [String; 3] {
         parts.get(1).cloned().unwrap_or_else(|| "?".to_string()),
         parts.get(2).cloned().unwrap_or_else(|| "?".to_string()),
     ]
+}
+
+/// Strips pre-release, build metadata, and custom suffixes from a version
+/// string, returning the numeric core and the full suffix.
+///
+/// This mirrors the logic in `workflow::versioning::split_custom_suffix` +
+/// `split_semver` but returns the combined suffix (custom + pre-release +
+/// build) so it can be displayed alongside the tile name.
+///
+/// Order of stripping:
+///   1. Custom suffix (`:...` or `--...`) — ComfyGit extension
+///   2. SemVer pre-release/build (`-...` or `+...`)
+///
+/// Examples:
+///   "0.8.0-alpha.0-comfy"  -> ("0.8.0", "-alpha.0-comfy")
+///   "0.8.0-alpha.0:comfy"   -> ("0.8.0", "-alpha.0:comfy")
+///   "0.8.0:comfy-alpha.0"   -> ("0.8.0", ":comfy-alpha.0")
+///   "0.8.0-alpha.0--comfy"  -> ("0.8.0", "-alpha.0--comfy")
+///   "0.8.0--comfy-alpha.0"  -> ("0.8.0", "--comfy-alpha.0")
+///   "1.0.0+build.42"        -> ("1.0.0", "+build.42")
+fn strip_version_suffix(version: &str) -> (String, Option<String>) {
+    // Find the earliest position where a suffix starts.
+    // We check for `:`, `--`, and the first `-`/`+` after the 3rd part.
+    let dot_positions: Vec<usize> = version
+        .char_indices()
+        .filter(|(_, c)| *c == '.')
+        .map(|(i, _)| i)
+        .collect();
+
+    let search_start = if dot_positions.len() >= 2 {
+        dot_positions[1] + 1
+    } else {
+        0
+    };
+
+    let mut earliest: Option<usize> = None;
+
+    // Custom suffix delimiters: `:` or `--`
+    if let Some(pos) = version.find(':') {
+        earliest = Some(pos);
+    }
+    if let Some(pos) = version.find("--") {
+        earliest = Some(earliest.map_or(pos, |e| e.min(pos)));
+    }
+
+    // SemVer pre-release/build: first `-` or `+` after the 3rd part begins
+    if let Some(pos) = version[search_start..]
+        .char_indices()
+        .find(|(_, c)| *c == '-' || *c == '+')
+        .map(|(i, _)| search_start + i)
+    {
+        earliest = Some(earliest.map_or(pos, |e| e.min(pos)));
+    }
+
+    match earliest {
+        Some(pos) => (version[..pos].to_string(), Some(version[pos..].to_string())),
+        None => (version.to_string(), None),
+    }
 }
 
 fn spaced_version(version: &str) -> String {
