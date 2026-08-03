@@ -695,7 +695,7 @@ impl ProjectWizard {
                 bail!("target key is required");
             }
             match &self.last_probe {
-                Some(probe) if matches!(probe.kind, ProbeKind::Success) => {}
+                Some(probe) if matches!(probe.kind, ProbeKind::Success | ProbeKind::Warning) => {}
                 Some(_) => bail!("read the target successfully before saving"),
                 None => bail!("validate the target before saving"),
             }
