@@ -28,7 +28,17 @@ pub(crate) fn git_common_dir(cwd: &Path) -> Result<PathBuf> {
     let cwd_display = cwd.display().to_string();
     let output = run_git_checked(&cwd_display, &["rev-parse", "--git-common-dir"])?;
     let path = PathBuf::from(output.trim());
-    Ok(best_effort_canonicalize(&path))
+    // `git rev-parse --git-common-dir` may return a relative path (e.g. `.git`
+    // or `../.git` for linked worktrees).  Resolve it against `cwd` — NOT the
+    // process CWD — before canonicalizing, otherwise two different repos will
+    // both resolve to the same `.git` directory (the process CWD's `.git`),
+    // causing false matches in `repo_path_matches`.
+    let resolved = if path.is_absolute() {
+        path
+    } else {
+        cwd.join(&path)
+    };
+    Ok(best_effort_canonicalize(&resolved))
 }
 
 /// Returns the root of the main worktree (the directory that contains the
