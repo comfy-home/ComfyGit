@@ -596,7 +596,11 @@ mod tests {
 
     #[test]
     fn semver_accepts_prerelease_suffix() {
-        assert!(VersionScheme::SemVer.validate("0.8.0-alpha.0-comfy").is_ok());
+        assert!(
+            VersionScheme::SemVer
+                .validate("0.8.0-alpha.0-comfy")
+                .is_ok()
+        );
         assert!(VersionScheme::SemVer.validate("1.0.0-beta").is_ok());
         assert!(VersionScheme::SemVer.validate("1.0.0-alpha.1").is_ok());
         assert!(VersionScheme::SemVer.validate("1.0.0-rc.2").is_ok());
@@ -605,8 +609,16 @@ mod tests {
     #[test]
     fn semver_accepts_build_metadata() {
         assert!(VersionScheme::SemVer.validate("1.0.0+build.42").is_ok());
-        assert!(VersionScheme::SemVer.validate("1.0.0+20130313144700").is_ok());
-        assert!(VersionScheme::SemVer.validate("1.0.0-beta+exp.sha.5114f85").is_ok());
+        assert!(
+            VersionScheme::SemVer
+                .validate("1.0.0+20130313144700")
+                .is_ok()
+        );
+        assert!(
+            VersionScheme::SemVer
+                .validate("1.0.0-beta+exp.sha.5114f85")
+                .is_ok()
+        );
     }
 
     #[test]
@@ -721,12 +733,20 @@ mod tests {
 
     #[test]
     fn semver_accepts_custom_suffix_after_prerelease() {
-        assert!(VersionScheme::SemVer.validate("0.8.0-alpha.0:comfy").is_ok());
+        assert!(
+            VersionScheme::SemVer
+                .validate("0.8.0-alpha.0:comfy")
+                .is_ok()
+        );
     }
 
     #[test]
     fn semver_accepts_custom_suffix_without_prerelease() {
-        assert!(VersionScheme::SemVer.validate("0.8.0:comfy-alpha.0").is_ok());
+        assert!(
+            VersionScheme::SemVer
+                .validate("0.8.0:comfy-alpha.0")
+                .is_ok()
+        );
     }
 
     #[test]
