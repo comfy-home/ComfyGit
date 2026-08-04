@@ -33,12 +33,14 @@ pub(crate) use worktree_paths::{adjust_paths_for_worktree, restore_paths_after_m
 
 /// Git-related utilities for interacting with repositories, collecting activity summaries, and managing tags.
 use std::{
+    io::Read,
     path::Path,
     process::{Command, Stdio},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
+    thread,
     time::Duration,
 };
 
@@ -937,10 +939,31 @@ pub(crate) fn run_git_with_cancel(
         .spawn()
         .with_context(|| format!("failed to run git in {}", repo_root))?;
 
+    // Drain stdout and stderr in separate threads to prevent pipe deadlock.
+    // Without this, commands that produce more output than the OS pipe buffer
+    // (~64KB on Linux) will deadlock: the child blocks writing to the pipe,
+    // and the parent blocks in try_wait() waiting for the child to exit.
+    let stdout_handle = child.stdout.take();
+    let stderr_handle = child.stderr.take();
+    let stdout_thread = thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(mut handle) = stdout_handle {
+            let _ = handle.read_to_end(&mut buf);
+        }
+        buf
+    });
+    let stderr_thread = thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(mut handle) = stderr_handle {
+            let _ = handle.read_to_end(&mut buf);
+        }
+        buf
+    });
+
     loop {
         if cancel.as_ref().is_some_and(GitCancellation::is_cancelled) {
             let _ = child.kill();
-            let _ = child.wait_with_output();
+            let _ = child.wait();
             crate::debug::log_git_end(repo_root, args, started, false);
             send_git_toast_event(GitToastEvent {
                 command_id,
@@ -953,28 +976,27 @@ pub(crate) fn run_git_with_cancel(
             .try_wait()
             .with_context(|| format!("failed to poll git in {}", repo_root))?
         {
-            let output = child
-                .wait_with_output()
-                .with_context(|| format!("failed to collect git output in {}", repo_root))?;
             let success = status.success();
+            let stdout = stdout_thread.join().unwrap_or_default();
+            let stderr = stderr_thread.join().unwrap_or_default();
             crate::debug::log_git_end(repo_root, args, started, success);
             send_git_toast_event(GitToastEvent {
                 command_id,
                 kind: GitToastEventKind::Finished {
                     success,
-                    stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+                    stderr: String::from_utf8_lossy(&stderr).to_string(),
                 },
             });
             return Ok(GitOutput {
                 success,
-                stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-                stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+                stdout: String::from_utf8_lossy(&stdout).to_string(),
+                stderr: String::from_utf8_lossy(&stderr).to_string(),
             });
         }
 
         if started.elapsed() >= timeout {
             let _ = child.kill();
-            let _ = child.wait_with_output();
+            let _ = child.wait();
             crate::debug::log_git_timeout(repo_root, args, timeout.as_secs());
             send_git_toast_event(GitToastEvent {
                 command_id,
