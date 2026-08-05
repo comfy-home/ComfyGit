@@ -92,6 +92,22 @@ pub(crate) fn run_pr_and_capture(
         );
     }
 
+    // Check for commits between target and current branch before doing anything else.
+    // This avoids a confusing GitHub API error ("No commits between ...") later.
+    let range_spec = format!("{}..{}", target_branch, current_branch);
+    let log_output = run_git_checked_with_cancel(
+        repo_root,
+        &["log", "--pretty=format:%h", &range_spec],
+        cancel.clone(),
+    )?;
+    if log_output.trim().is_empty() {
+        bail!(
+            "no commits found between '{}' and '{}'; make sure your branch has commits ahead of the target before opening a pull request",
+            target_branch,
+            current_branch
+        );
+    }
+
     ensure_clean_worktree_with_cancel(repo_root, "cg pr", cancel.clone())?;
     let current_upstream_ref = ensure_local_branch_published_and_in_sync_with_cancel(
         repo_root,
