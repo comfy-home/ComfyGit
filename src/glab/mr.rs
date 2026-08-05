@@ -48,11 +48,64 @@ pub fn view_merge_request(repo_root: &str, number: u64) -> Result<ForgePullReque
 }
 
 pub fn fetch_mergeability(repo_root: &str, number: u64) -> Result<crate::forge::ForgeMergeability> {
-    let mr = view_merge_request(repo_root, number)?;
+    // Use the GitLab REST API directly instead of `glab mr view --output json`.
+    // The `glab mr view` command omits the `merge_status` field from its JSON
+    // output, leaving only `detailed_merge_status` which can be stuck at
+    // "checking" for a long time even when the MR is actually mergeable.
+    // The REST API returns both `merge_status` (reliable, e.g. "can_be_merged")
+    // and `detailed_merge_status` (can be stale).
+    let project_path = resolve_gitlab_project_path(repo_root)?;
+    let encoded_path = percent_encode_path(&project_path);
+    let endpoint = format!("projects/{}/merge_requests/{}", encoded_path, number);
+    let output = cli::run_in_repo(repo_root, &["api", &endpoint])?;
+    if !output.status.success() {
+        bail_cli_failure("api merge_requests", &output)?;
+    }
+    let api_response: GitlabMergeRequestApi =
+        serde_json::from_slice(&output.stdout).context("failed to parse GitLab API response")?;
     Ok(crate::forge::ForgeMergeability {
-        mergeable: mr.mergeable_state.clone(),
-        merge_state_status: mr.status.clone(),
+        // `merge_status` is the reliable field (e.g. "can_be_merged").
+        // Fall back to `detailed_merge_status` if `merge_status` is absent.
+        mergeable: api_response
+            .merge_status
+            .or(api_response.detailed_merge_status.clone())
+            .unwrap_or_else(|| "unknown".to_string()),
+        merge_state_status: api_response
+            .detailed_merge_status
+            .unwrap_or_else(|| "unknown".to_string()),
     })
+}
+
+/// Resolves the GitLab project path (URL-encoded) for API calls.
+fn resolve_gitlab_project_path(repo_root: &str) -> Result<String> {
+    let remote_name = crate::git::default_push_remote_name(repo_root)?;
+    let remote_url = crate::git::run_git_checked(repo_root, &["remote", "get-url", &remote_name])?;
+    let (owner, repo) = crate::glab::remote::owner_repo_from_remote_url(remote_url.trim())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "could not parse GitLab project path from remote URL '{}'",
+                remote_url.trim()
+            )
+        })?;
+    Ok(format!("{owner}/{repo}"))
+}
+
+/// Percent-encodes a GitLab project path for use in API URLs.
+/// The `/` separator between namespace segments is preserved.
+fn percent_encode_path(path: &str) -> String {
+    path.chars()
+        .map(|c| match c {
+            '/' => "/".to_string(),
+            c if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~') => c.to_string(),
+            c => {
+                let mut encoded = String::new();
+                for byte in c.to_string().as_bytes() {
+                    encoded.push_str(&format!("%{:02X}", byte));
+                }
+                encoded
+            }
+        })
+        .collect()
 }
 
 pub fn merge_merge_request(
@@ -181,6 +234,14 @@ struct GlabMergeRequest {
     web_url: Option<String>,
 }
 
+/// Minimal struct for parsing the GitLab REST API response for a merge request.
+/// Used by `fetch_mergeability` to get the reliable `merge_status` field.
+#[derive(Deserialize)]
+struct GitlabMergeRequestApi {
+    merge_status: Option<String>,
+    detailed_merge_status: Option<String>,
+}
+
 #[derive(Deserialize)]
 struct GlabAuthor {
     username: Option<String>,
@@ -275,5 +336,29 @@ mod tests {
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].iid, 140);
         assert_eq!(listed[0].target_branch, "0.35.x");
+    }
+
+    #[test]
+    fn gitlab_api_response_parses_merge_status() {
+        let api_json = r#"{"merge_status":"can_be_merged","detailed_merge_status":"checking"}"#;
+        let api: GitlabMergeRequestApi =
+            serde_json::from_str(api_json).expect("parse api response");
+        assert_eq!(api.merge_status.as_deref(), Some("can_be_merged"));
+        assert_eq!(api.detailed_merge_status.as_deref(), Some("checking"));
+    }
+
+    #[test]
+    fn percent_encode_path_preserves_slashes() {
+        assert_eq!(
+            percent_encode_path("comfyhome/x-project/my-repo"),
+            "comfyhome/x-project/my-repo"
+        );
+        assert_eq!(percent_encode_path("simple/repo"), "simple/repo");
+    }
+
+    #[test]
+    fn percent_encode_path_encodes_special_chars() {
+        assert_eq!(percent_encode_path("group/my repo"), "group/my%20repo");
+        assert_eq!(percent_encode_path("group/repo.name"), "group/repo.name");
     }
 }
