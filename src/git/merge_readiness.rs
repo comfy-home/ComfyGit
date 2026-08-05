@@ -16,7 +16,7 @@ use anyhow::{Context, Result, bail};
 const POST_MERGE_SYNC_STASH_MESSAGE: &str = "comfygit: auto-stash before post-merge sync";
 
 pub(crate) const MERGEABILITY_PENDING_RETRY_SECONDS: u64 = 5;
-pub(crate) const MERGEABILITY_PENDING_MAX_RETRIES: u32 = 3;
+pub(crate) const MERGEABILITY_PENDING_MAX_RETRIES: u32 = 11;
 
 /// Waits for forge merge checks only while the remote reports a pending state (e.g. GitLab `checking`).
 /// Any other non-mergeable result fails immediately (conflicts, blocked, etc.).
@@ -255,9 +255,9 @@ mod tests {
     }
 
     #[test]
-    fn mergeability_retry_policy_uses_three_five_second_retries() {
+    fn mergeability_retry_policy_uses_eleven_five_second_retries() {
         assert_eq!(MERGEABILITY_PENDING_RETRY_SECONDS, 5);
-        assert_eq!(MERGEABILITY_PENDING_MAX_RETRIES, 3);
+        assert_eq!(MERGEABILITY_PENDING_MAX_RETRIES, 11);
     }
 
     #[test]
