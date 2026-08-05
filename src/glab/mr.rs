@@ -15,17 +15,24 @@ use crate::{
 };
 
 pub fn list_open_merge_requests(repo_root: &str, limit: usize) -> Result<Vec<ForgePullRequest>> {
-    let limit = limit.to_string();
-    let output = cli::run_in_repo(
-        repo_root,
-        &["mr", "list", "--per-page", &limit, "--output", "json"],
-    )?;
+    // Use the GitLab REST API directly instead of `glab mr list --output json`.
+    // The `glab mr list` command omits the `merge_status` field from its JSON
+    // output, leaving only `detailed_merge_status` which can be stuck at
+    // "checking" for a long time even when the MR is actually mergeable.
+    let project_path = resolve_gitlab_project_path(repo_root)?;
+    let encoded_path = percent_encode_path(&project_path);
+    let per_page = limit.to_string();
+    let endpoint = format!(
+        "projects/{}/merge_requests?state=opened&per_page={}&order_by=created_at&sort=desc",
+        encoded_path, per_page
+    );
+    let output = cli::run_in_repo(repo_root, &["api", &endpoint])?;
     if !output.status.success() {
-        bail_cli_failure("mr list", &output)?;
+        bail_cli_failure("api merge_requests list", &output)?;
     }
 
-    let listed: Vec<GlabMergeRequest> =
-        serde_json::from_slice(&output.stdout).context("failed to parse glab mr list output")?;
+    let listed: Vec<GlabMergeRequest> = serde_json::from_slice(&output.stdout)
+        .context("failed to parse GitLab API merge_requests list output")?;
     let repository_issue_root = remote::repository_web_url(repo_root);
     Ok(listed
         .into_iter()
@@ -34,15 +41,16 @@ pub fn list_open_merge_requests(repo_root: &str, limit: usize) -> Result<Vec<For
 }
 
 pub fn view_merge_request(repo_root: &str, number: u64) -> Result<ForgePullRequest> {
-    let output = cli::run_in_repo(
-        repo_root,
-        &["mr", "view", &number.to_string(), "--output", "json"],
-    )?;
+    // Use the GitLab REST API directly to get the reliable `merge_status` field.
+    let project_path = resolve_gitlab_project_path(repo_root)?;
+    let encoded_path = percent_encode_path(&project_path);
+    let endpoint = format!("projects/{}/merge_requests/{}", encoded_path, number);
+    let output = cli::run_in_repo(repo_root, &["api", &endpoint])?;
     if !output.status.success() {
-        bail_cli_failure("mr view", &output)?;
+        bail_cli_failure("api merge_requests view", &output)?;
     }
-    let mr: GlabMergeRequest =
-        serde_json::from_slice(&output.stdout).context("failed to parse glab mr view output")?;
+    let mr: GlabMergeRequest = serde_json::from_slice(&output.stdout)
+        .context("failed to parse GitLab API merge_request output")?;
     let repository_issue_root = remote::repository_web_url(repo_root);
     Ok(mr.into_forge(repository_issue_root.as_deref()))
 }
@@ -52,10 +60,20 @@ pub fn fetch_mergeability(repo_root: &str, number: u64) -> Result<crate::forge::
     // The `glab mr view` command omits the `merge_status` field from its JSON
     // output, leaving only `detailed_merge_status` which can be stuck at
     // "checking" for a long time even when the MR is actually mergeable.
-    // The REST API returns both `merge_status` (reliable, e.g. "can_be_merged")
-    // and `detailed_merge_status` (can be stale).
     let project_path = resolve_gitlab_project_path(repo_root)?;
     let encoded_path = percent_encode_path(&project_path);
+
+    // Force GitLab to recompute mergeability by hitting the merge_ref endpoint.
+    // GitLab's `merge_status` can be stuck at "checking" indefinitely, especially
+    // for newly created MRs. The `merge_ref` endpoint forces a recheck as a side
+    // effect and returns a commit SHA if the MR is mergeable.
+    let merge_ref_endpoint = format!(
+        "projects/{}/merge_requests/{}/merge_ref",
+        encoded_path, number
+    );
+    let _ = cli::run_in_repo(repo_root, &["api", &merge_ref_endpoint]);
+
+    // Now fetch the (recomputed) merge status.
     let endpoint = format!("projects/{}/merge_requests/{}", encoded_path, number);
     let output = cli::run_in_repo(repo_root, &["api", &endpoint])?;
     if !output.status.success() {
@@ -231,6 +249,7 @@ struct GlabMergeRequest {
     author: Option<GlabAuthor>,
     merge_status: Option<String>,
     detailed_merge_status: Option<String>,
+    has_conflicts: Option<bool>,
     web_url: Option<String>,
 }
 
@@ -264,11 +283,19 @@ fn is_mergeable_status(status: &str) -> bool {
 
 impl GlabMergeRequest {
     fn into_forge(self, repository_issue_root: Option<&str>) -> ForgePullRequest {
-        let mergeable_state = self
-            .detailed_merge_status
+        // Prefer `merge_status` (reliable, e.g. "can_be_merged") over
+        // `detailed_merge_status` (can be stale at "checking" for a long time).
+        let mut mergeable_state = self
+            .merge_status
             .clone()
-            .or(self.merge_status.clone())
+            .or(self.detailed_merge_status.clone())
             .unwrap_or_else(|| "unknown".to_string());
+        // GitLab's `merge_status` can be stuck at "checking" indefinitely.
+        // If `has_conflicts` is explicitly `false`, treat it as mergeable
+        // so the picker doesn't show a false "Mergeable: False".
+        if mergeable_state.eq_ignore_ascii_case("checking") && self.has_conflicts == Some(false) {
+            mergeable_state = "can_be_merged".to_string();
+        }
         let status = mergeable_state.clone();
         let issue_url = repository_issue_root
             .filter(|_| !is_mergeable_status(&mergeable_state))
@@ -345,6 +372,60 @@ mod tests {
             serde_json::from_str(api_json).expect("parse api response");
         assert_eq!(api.merge_status.as_deref(), Some("can_be_merged"));
         assert_eq!(api.detailed_merge_status.as_deref(), Some("checking"));
+    }
+
+    #[test]
+    fn into_forge_prefers_merge_status_over_detailed_merge_status() {
+        // When both fields are present, merge_status (reliable) should win
+        // over detailed_merge_status (can be stale at "checking").
+        let mr_json = r#"{
+            "iid": 119,
+            "title": "test",
+            "target_branch": "main",
+            "source_branch": "feature",
+            "created_at": "2026-08-05T20:58:11.708Z",
+            "merge_status": "can_be_merged",
+            "detailed_merge_status": "checking"
+        }"#;
+        let mr: GlabMergeRequest = serde_json::from_str(mr_json).expect("parse");
+        let forge = mr.into_forge(None);
+        assert_eq!(forge.mergeable_state, "can_be_merged");
+    }
+
+    #[test]
+    fn into_forge_treats_checking_with_no_conflicts_as_mergeable() {
+        // GitLab's merge_status can be stuck at "checking" indefinitely.
+        // If has_conflicts is explicitly false, treat it as mergeable.
+        let mr_json = r#"{
+            "iid": 119,
+            "title": "test",
+            "target_branch": "main",
+            "source_branch": "feature",
+            "created_at": "2026-08-05T20:58:11.708Z",
+            "merge_status": "checking",
+            "detailed_merge_status": "checking",
+            "has_conflicts": false
+        }"#;
+        let mr: GlabMergeRequest = serde_json::from_str(mr_json).expect("parse");
+        let forge = mr.into_forge(None);
+        assert_eq!(forge.mergeable_state, "can_be_merged");
+    }
+
+    #[test]
+    fn into_forge_preserves_conflict_state_when_has_conflicts_true() {
+        let mr_json = r#"{
+            "iid": 119,
+            "title": "test",
+            "target_branch": "main",
+            "source_branch": "feature",
+            "created_at": "2026-08-05T20:58:11.708Z",
+            "merge_status": "checking",
+            "detailed_merge_status": "checking",
+            "has_conflicts": true
+        }"#;
+        let mr: GlabMergeRequest = serde_json::from_str(mr_json).expect("parse");
+        let forge = mr.into_forge(None);
+        assert_eq!(forge.mergeable_state, "checking");
     }
 
     #[test]
