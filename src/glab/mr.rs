@@ -133,25 +133,31 @@ pub fn merge_merge_request(
     subject: &str,
     delete_remote_branch: bool,
 ) -> Result<String> {
+    // Use the GitLab REST API directly to avoid `glab mr merge` 401 issues
+    // with projects in subgroups.
+    let project_path = resolve_gitlab_project_path(repo_root)?;
+    let encoded_path = percent_encode_path(&project_path);
+    let endpoint = format!("projects/{}/merge_requests/{}/merge", encoded_path, number);
     let remove_flag = if delete_remote_branch {
-        "--remove-source-branch=true"
+        "remove_source_branch=true"
     } else {
-        "--remove-source-branch=false"
+        "remove_source_branch=false"
     };
     let output = cli::run_in_repo(
         repo_root,
         &[
-            "mr",
-            "merge",
-            &number.to_string(),
-            "--message",
-            subject,
+            "api",
+            "--method",
+            "PUT",
+            &endpoint,
+            "--field",
+            &format!("merge_commit_message={subject}"),
+            "--field",
             remove_flag,
-            "--yes",
         ],
     )?;
     if !output.status.success() {
-        bail_cli_failure("mr merge", &output)?;
+        bail_cli_failure("api merge_requests merge", &output)?;
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
@@ -163,31 +169,65 @@ pub fn create_merge_request(
     title: &str,
     body_path: &Path,
 ) -> Result<String> {
+    let body = std::fs::read_to_string(body_path).with_context(|| {
+        format!(
+            "failed to read merge request body from '{}'",
+            body_path.display()
+        )
+    })?;
+
+    // Use the GitLab REST API directly instead of `glab mr create`.
+    // `glab mr create` can fail with 401 Unauthorized for projects in subgroups
+    // due to a glab bug in project resolution. The REST API works reliably.
+    let project_path = resolve_gitlab_project_path(repo_root)?;
+    let encoded_path = percent_encode_path(&project_path);
+
+    // Write the description to a temp file and use --field with @ to pass it,
+    // to avoid shell escaping issues with large markdown bodies.
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let temp_body = std::env::temp_dir().join(format!("comfygit-mr-create-{timestamp}.md"));
+    std::fs::write(&temp_body, &body)
+        .with_context(|| format!("failed to write temp body to {}", temp_body.display()))?;
+
+    let body_file_arg = format!("@{}", temp_body.display());
+    let source_branch_arg = format!("source_branch={current_branch}");
+    let target_branch_arg = format!("target_branch={target_branch}");
+    let title_arg = format!("title={title}");
+    let remove_source_arg = "remove_source_branch=false";
+
     let output = cli::run_in_repo(
         repo_root,
         &[
-            "mr",
-            "create",
-            "--target-branch",
-            target_branch,
-            "--source-branch",
-            current_branch,
-            "--remove-source-branch=false",
-            "--title",
-            title,
-            "--description",
-            &std::fs::read_to_string(body_path).with_context(|| {
-                format!(
-                    "failed to read merge request body from '{}'",
-                    body_path.display()
-                )
-            })?,
+            "api",
+            "--method",
+            "POST",
+            &format!("projects/{}/merge_requests", encoded_path),
+            "--field",
+            &source_branch_arg,
+            "--field",
+            &target_branch_arg,
+            "--field",
+            &title_arg,
+            "--field",
+            &format!("description={}", body_file_arg),
+            "--field",
+            remove_source_arg,
         ],
     )?;
+
+    let _ = std::fs::remove_file(&temp_body);
+
     if !output.status.success() {
-        bail_cli_failure("mr create", &output)?;
+        bail_cli_failure("api merge_requests create", &output)?;
     }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+
+    // Parse the response to extract the MR web URL.
+    let response: GitlabMergeRequestCreateResponse = serde_json::from_slice(&output.stdout)
+        .context("failed to parse GitLab API merge_request create response")?;
+    Ok(response.web_url)
 }
 
 pub fn lookup_created_merge_request(
@@ -195,25 +235,21 @@ pub fn lookup_created_merge_request(
     current_branch: &str,
     target_branch: &str,
 ) -> Result<(u64, String)> {
-    let output = cli::run_in_repo(
-        repo_root,
-        &[
-            "mr",
-            "list",
-            "--source-branch",
-            current_branch,
-            "--per-page",
-            "20",
-            "--output",
-            "json",
-        ],
-    )?;
+    // Use the GitLab REST API directly to avoid `glab mr list` 401 issues
+    // with projects in subgroups.
+    let project_path = resolve_gitlab_project_path(repo_root)?;
+    let encoded_path = percent_encode_path(&project_path);
+    let endpoint = format!(
+        "projects/{}/merge_requests?source_branch={}&state=opened&per_page=20",
+        encoded_path, current_branch
+    );
+    let output = cli::run_in_repo(repo_root, &["api", &endpoint])?;
     if !output.status.success() {
-        bail_cli_failure("mr list", &output)?;
+        bail_cli_failure("api merge_requests lookup", &output)?;
     }
 
     let listed: Vec<GlabMergeRequestLookup> = serde_json::from_slice(&output.stdout)
-        .context("failed to parse glab mr list output for the newly created branch")?;
+        .context("failed to parse GitLab API merge_requests lookup output")?;
     let matched = listed
         .into_iter()
         .find(|mr| mr.target_branch == target_branch)
@@ -260,6 +296,12 @@ struct GlabMergeRequest {
 struct GitlabMergeRequestApi {
     merge_status: Option<String>,
     detailed_merge_status: Option<String>,
+}
+
+/// Response from creating a merge request via the GitLab REST API.
+#[derive(Deserialize)]
+struct GitlabMergeRequestCreateResponse {
+    web_url: String,
 }
 
 #[derive(Deserialize)]
