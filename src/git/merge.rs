@@ -750,6 +750,8 @@ fn merge_pull_request(
 
     let policy = resolve_post_merge_source_branch(repo_root);
     let subject = build_merge_commit_subject(refreshed.number);
+    let label = forge.pull_request_label();
+    println!("Merging {} #{}...", capitalize_first(label), entry.number);
     let stdout = forge.merge_pull_request(
         repo_root,
         refreshed.number,
@@ -760,16 +762,23 @@ fn merge_pull_request(
     )?;
     println!();
     if stdout.is_empty() {
-        let label = forge.pull_request_label();
-        println!("{} #{} merged.", capitalize_first(label), entry.number);
+        println!(
+            "\x1b[32m{} #{} merged.\x1b[0m",
+            capitalize_first(label),
+            entry.number
+        );
     } else {
-        println!("{}", stdout);
+        println!("\x1b[32m{}\x1b[0m", stdout);
     }
+    println!();
 
     // Sync the integration branch before deleting the source locally: `git branch -d`
     // requires the source to be merged into the current target, which is only true after
     // we fast-forward the target from the remote merge.
     finish_after_pull_request_merge(repo_root, &refreshed.target_branch, cancel.clone())?;
+    println!();
+    println!("\x1b[32mSynced.\x1b[0m");
+    println!();
 
     if policy.delete_local_after_merge() {
         switch_off_branch_for_deletion(
@@ -784,6 +793,9 @@ fn merge_pull_request(
     }
     cleanup_merge_workspaces_for_pr(repo_root, refreshed.number)?;
 
+    println!();
+    println!("Checking secondary remote...");
+    println!();
     if let Err(error) = crate::workflow::cli_sync::run_mirror_sync_after_comfygit_merge(repo_root) {
         eprintln!("Warning: mirror sync after merge failed: {error:#}. Run `cg sync` to retry.");
     }
@@ -814,6 +826,12 @@ pub(crate) fn merge_pull_request_remote_only(
 
     let policy = resolve_post_merge_source_branch(repo_root);
     let subject = build_merge_commit_subject(refreshed.number);
+    let label = forge.pull_request_label();
+    println!(
+        "Merging {} #{}...",
+        capitalize_first(label),
+        refreshed.number
+    );
     let stdout = forge.merge_pull_request(
         repo_root,
         refreshed.number,
@@ -824,11 +842,15 @@ pub(crate) fn merge_pull_request_remote_only(
     )?;
     println!();
     if stdout.is_empty() {
-        let label = forge.pull_request_label();
-        println!("{} #{} merged.", capitalize_first(label), refreshed.number);
+        println!(
+            "\x1b[32m{} #{} merged.\x1b[0m",
+            capitalize_first(label),
+            refreshed.number
+        );
     } else {
-        println!("{}", stdout);
+        println!("\x1b[32m{}\x1b[0m", stdout);
     }
+    println!();
 
     Ok(RemoteMergeResult {
         target_branch: refreshed.target_branch,

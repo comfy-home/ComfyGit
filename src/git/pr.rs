@@ -215,6 +215,7 @@ pub(crate) fn run_pr_and_capture(
     } else {
         println!("{create_output}");
     }
+    println!();
     resolve_created_pull_request(
         forge,
         repo_root,

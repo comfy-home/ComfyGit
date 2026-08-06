@@ -425,6 +425,9 @@ pub(crate) fn run_wt_end(
         "Syncing \x1b[33m{}\x1b[0m in the main worktree...",
         merge_result.target_branch
     );
+    // Fetch before sync: after a remote merge, the local remote-tracking refs
+    // are stale and need to be refreshed from all remotes.
+    crate::git::run_git_checked_with_cancel(&main_root_str, &["fetch", "--all"], cancel.clone())?;
     crate::git::switch_to_existing_branch_after_merge(&main_root_str, &merge_result.target_branch)?;
     crate::git::sync_current_branch(&main_root_str, cancel.clone())?;
 
@@ -458,6 +461,9 @@ pub(crate) fn run_wt_end(
     }
 
     // Step 6: Mirror sync.
+    println!();
+    println!("Checking secondary remote...");
+    println!();
     if let Err(error) =
         crate::workflow::cli_sync::run_mirror_sync_after_comfygit_merge(&main_root_str)
     {
