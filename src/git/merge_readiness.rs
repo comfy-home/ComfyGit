@@ -84,6 +84,7 @@ pub(crate) fn finish_after_pull_request_merge(
     // is GitHub), the merge commit won't be visible without an explicit fetch
     // from the correct remote first.
     println!("Syncing from remote...");
+    println!();
     run_git_checked_with_cancel(repo_root, &["fetch", "--all"], cancel.clone())?;
     sync_current_branch(repo_root, cancel)?;
     Ok(())
