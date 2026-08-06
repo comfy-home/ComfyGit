@@ -78,6 +78,13 @@ pub(crate) fn finish_after_pull_request_merge(
     switch_to_existing_branch_after_merge(repo_root, target_branch).with_context(|| {
         format!("failed to switch to target branch '{target_branch}' after merge")
     })?;
+    // Fetch before sync: after a remote merge, the local remote-tracking refs
+    // are stale. `git pull --ff-only` fetches from the upstream remote, but if
+    // the merge happened on a different remote (e.g. GitLab merge but upstream
+    // is GitHub), the merge commit won't be visible without an explicit fetch
+    // from the correct remote first.
+    println!("Syncing from remote...");
+    run_git_checked_with_cancel(repo_root, &["fetch", "--all"], cancel.clone())?;
     sync_current_branch(repo_root, cancel)?;
     Ok(())
 }
