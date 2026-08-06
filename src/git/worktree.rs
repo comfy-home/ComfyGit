@@ -461,6 +461,9 @@ pub(crate) fn run_wt_end(
     }
 
     // Step 6: Mirror sync.
+    println!();
+    println!("Checking secondary remote...");
+    println!();
     if let Err(error) =
         crate::workflow::cli_sync::run_mirror_sync_after_comfygit_merge(&main_root_str)
     {
