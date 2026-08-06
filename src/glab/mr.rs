@@ -109,11 +109,12 @@ fn resolve_gitlab_project_path(repo_root: &str) -> Result<String> {
 }
 
 /// Percent-encodes a GitLab project path for use in API URLs.
-/// The `/` separator between namespace segments is preserved.
+/// The `/` separator between namespace segments must be encoded as `%2F`
+/// so GitLab treats the entire path as a single URL segment (project ID).
 fn percent_encode_path(path: &str) -> String {
     path.chars()
         .map(|c| match c {
-            '/' => "/".to_string(),
+            '/' => "%2F".to_string(),
             c if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~') => c.to_string(),
             c => {
                 let mut encoded = String::new();
@@ -432,14 +433,14 @@ mod tests {
     fn percent_encode_path_preserves_slashes() {
         assert_eq!(
             percent_encode_path("comfyhome/x-project/my-repo"),
-            "comfyhome/x-project/my-repo"
+            "comfyhome%2Fx-project%2Fmy-repo"
         );
-        assert_eq!(percent_encode_path("simple/repo"), "simple/repo");
+        assert_eq!(percent_encode_path("simple/repo"), "simple%2Frepo");
     }
 
     #[test]
     fn percent_encode_path_encodes_special_chars() {
-        assert_eq!(percent_encode_path("group/my repo"), "group/my%20repo");
-        assert_eq!(percent_encode_path("group/repo.name"), "group/repo.name");
+        assert_eq!(percent_encode_path("group/my repo"), "group%2Fmy%20repo");
+        assert_eq!(percent_encode_path("group/repo.name"), "group%2Frepo.name");
     }
 }
