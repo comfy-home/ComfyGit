@@ -159,7 +159,9 @@ pub fn merge_merge_request(
     if !output.status.success() {
         bail_cli_failure("api merge_requests merge", &output)?;
     }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    // Return empty string — the caller prints its own merge confirmation.
+    // The API response is a large JSON blob that should not be printed.
+    Ok(String::new())
 }
 
 pub fn create_merge_request(
