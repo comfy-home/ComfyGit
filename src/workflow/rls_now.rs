@@ -795,6 +795,36 @@ fn gitlab_upload_large_asset(repo_selector: &str, tag_name: &str, file_path: &st
     Ok(())
 }
 
+/// Verifies that a tag exists on GitHub via the REST API, retrying with
+/// exponential backoff.  This guards against a race condition where
+/// `git push` completes but GitHub's API hasn't processed the new tag ref
+/// yet, causing `gh release create` to fail with HTTP 422.
+fn verify_github_tag_exists(repo_selector: &str, tag_name: &str) -> Result<()> {
+    let endpoint = format!("repos/{repo_selector}/git/refs/tags/{tag_name}");
+    let max_retries = 5;
+    let mut delay = Duration::from_secs(2);
+    for attempt in 1..=max_retries {
+        let output = Command::new("gh")
+            .arg("api")
+            .arg(&endpoint)
+            .output()
+            .with_context(|| {
+                format!("failed to execute gh api for tag verification '{tag_name}'")
+            })?;
+        if output.status.success() {
+            return Ok(());
+        }
+        if attempt < max_retries {
+            std::thread::sleep(delay);
+            delay *= 2;
+        }
+    }
+    bail!(
+        "GitHub tag '{tag_name}' not visible via API after {max_retries} attempts; \
+         the tag may not have been pushed correctly"
+    )
+}
+
 fn release_asset_label_from_path(path: &str) -> String {
     Path::new(path)
         .file_name()
@@ -3608,7 +3638,16 @@ async fn create_or_update_forge_release(
     })
     .await?;
 
+    // GitHub's release body has a 125,000 character limit.  Truncate
+    // release notes that exceed this to avoid HTTP 422 "Validation Failed".
+    let release_notes_markdown: Option<String> = if forge == crate::forge::ForgeKind::GitHub {
+        release_notes_markdown.map(|notes| truncate_github_release_notes(notes.to_string()))
+    } else {
+        release_notes_markdown.map(str::to_string)
+    };
+
     let notes_file = release_notes_markdown
+        .as_deref()
         .filter(|notes| !notes.trim().is_empty())
         .map(write_release_notes_file)
         .transpose()?;
@@ -3843,6 +3882,19 @@ async fn create_or_update_forge_release(
                 emit_progress,
             )
             .await?;
+
+            // GitHub's API may need a moment to recognize a newly-pushed tag.
+            // Verify the tag is visible via the API before attempting to create
+            // the release, retrying a few times to avoid 422 "Validation Failed".
+            if forge == crate::forge::ForgeKind::GitHub {
+                let repo_selector = repo_selector_from_cli_repo_args(&repo_args)?;
+                let tag_name_for_verify = tag_name.to_string();
+                let repo_selector_for_verify = repo_selector.clone();
+                run_blocking_job(move || {
+                    verify_github_tag_exists(&repo_selector_for_verify, &tag_name_for_verify)
+                })
+                .await?;
+            }
 
             emit_progress(vec![format!(
                 "Creating {forge_label} release '{tag_name}'."
@@ -4225,6 +4277,43 @@ fn write_release_notes_file(notes: &str) -> Result<PathBuf> {
     fs::write(&file_path, notes)
         .with_context(|| format!("failed to write release notes to '{}'", file_path.display()))?;
     Ok(file_path)
+}
+
+/// GitHub's release body has a maximum of 125,000 characters.
+const GITHUB_RELEASE_BODY_MAX_CHARS: usize = 125_000;
+
+/// Truncates release notes to fit within GitHub's body size limit.
+/// If truncation is needed, a notice is appended.
+fn truncate_github_release_notes(notes: String) -> String {
+    if notes.chars().count() <= GITHUB_RELEASE_BODY_MAX_CHARS {
+        return notes;
+    }
+    let truncated: String = notes
+        .chars()
+        .take(GITHUB_RELEASE_BODY_MAX_CHARS - 200)
+        .collect();
+    format!(
+        "{truncated}\n\n---\n\n> ⚠️ Release notes truncated to fit GitHub's 125,000 character limit. See the full changelog in the repository.\n"
+    )
+}
+
+#[cfg(test)]
+mod truncate_tests {
+    use super::*;
+
+    #[test]
+    fn truncate_github_release_notes_short_notes_unchanged() {
+        let notes = "# v1.0.0\nShort release notes.".to_string();
+        assert_eq!(truncate_github_release_notes(notes.clone()), notes);
+    }
+
+    #[test]
+    fn truncate_github_release_notes_long_notes_truncated() {
+        let notes = "x".repeat(GITHUB_RELEASE_BODY_MAX_CHARS + 5000);
+        let result = truncate_github_release_notes(notes);
+        assert!(result.chars().count() <= GITHUB_RELEASE_BODY_MAX_CHARS);
+        assert!(result.contains("truncated"));
+    }
 }
 
 #[cfg(test)]
