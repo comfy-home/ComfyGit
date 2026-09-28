@@ -701,6 +701,130 @@ fn gitlab_release_asset_argument(path: &str) -> String {
     }
 }
 
+/// GitLab's project uploads endpoint has a default 50MB size limit.
+/// Files larger than this must be uploaded via the Generic Packages API
+/// and then linked as release assets.
+const GITLAB_UPLOAD_SIZE_LIMIT: u64 = 50 * 1024 * 1024;
+
+/// Returns `true` if the file at `path` exceeds GitLab's project upload size limit.
+fn file_exceeds_gitlab_upload_limit(path: &str) -> bool {
+    fs::metadata(path)
+        .map(|meta| meta.len() > GITLAB_UPLOAD_SIZE_LIMIT)
+        .unwrap_or(false)
+}
+
+/// Splits artifact files into (small, large) where `large` files exceed
+/// GitLab's project upload size limit and must be uploaded via the
+/// Generic Packages API instead.
+fn split_artifacts_by_size(artifact_files: &[String]) -> (Vec<String>, Vec<String>) {
+    let mut small = Vec::new();
+    let mut large = Vec::new();
+    for file in artifact_files {
+        if file_exceeds_gitlab_upload_limit(file) {
+            large.push(file.clone());
+        } else {
+            small.push(file.clone());
+        }
+    }
+    (small, large)
+}
+
+/// Uploads a large file to GitLab's Generic Packages API and creates a
+/// release asset link pointing to it.  This bypasses the 50MB project
+/// upload limit.
+fn gitlab_upload_large_asset(repo_selector: &str, tag_name: &str, file_path: &str) -> Result<()> {
+    let project = crate::glab::release::encode_gitlab_api_project(repo_selector);
+    let file_name = release_asset_label_from_path(file_path);
+    let package_name = "release-assets";
+    let package_version = tag_name.trim_start_matches('v');
+
+    // Upload via Generic Packages API: PUT /projects/:id/packages/generic/:name/:version/:file
+    // Use `--input` to send the file as the raw request body.
+    let upload_endpoint =
+        format!("projects/{project}/packages/generic/{package_name}/{package_version}/{file_name}");
+    let upload_output = Command::new("glab")
+        .arg("api")
+        .arg("--method")
+        .arg("PUT")
+        .arg(&upload_endpoint)
+        .arg("--input")
+        .arg(file_path)
+        .output()
+        .with_context(|| format!("failed to execute glab api PUT for large asset '{file_name}'"))?;
+    if !upload_output.status.success() {
+        let stderr = String::from_utf8_lossy(&upload_output.stderr)
+            .trim()
+            .to_string();
+        let stdout = String::from_utf8_lossy(&upload_output.stdout)
+            .trim()
+            .to_string();
+        let detail = if stderr.is_empty() { stdout } else { stderr };
+        bail!("GitLab Generic Packages upload failed for '{file_name}': {detail}");
+    }
+
+    // Create asset link: POST /projects/:id/releases/:tag/assets/links
+    let tag_encoded = crate::glab::release::encode_gitlab_api_tag(tag_name);
+    let link_endpoint = format!("projects/{project}/releases/{tag_encoded}/assets/links");
+    let download_url = format!(
+        "https://gitlab.com/api/v4/projects/{project}/packages/generic/{package_name}/{package_version}/{file_name}"
+    );
+    let link_output = Command::new("glab")
+        .arg("api")
+        .arg("--method")
+        .arg("POST")
+        .arg(&link_endpoint)
+        .arg("--field")
+        .arg(format!("name={file_name}"))
+        .arg("--field")
+        .arg(format!("url={download_url}"))
+        .arg("--field")
+        .arg("link_type=package")
+        .output()
+        .with_context(|| format!("failed to execute glab api POST asset link for '{file_name}'"))?;
+    if !link_output.status.success() {
+        let stderr = String::from_utf8_lossy(&link_output.stderr)
+            .trim()
+            .to_string();
+        let stdout = String::from_utf8_lossy(&link_output.stdout)
+            .trim()
+            .to_string();
+        let detail = if stderr.is_empty() { stdout } else { stderr };
+        bail!("GitLab release asset link creation failed for '{file_name}': {detail}");
+    }
+
+    Ok(())
+}
+
+/// Verifies that a tag exists on GitHub via the REST API, retrying with
+/// exponential backoff.  This guards against a race condition where
+/// `git push` completes but GitHub's API hasn't processed the new tag ref
+/// yet, causing `gh release create` to fail with HTTP 422.
+fn verify_github_tag_exists(repo_selector: &str, tag_name: &str) -> Result<()> {
+    let endpoint = format!("repos/{repo_selector}/git/refs/tags/{tag_name}");
+    let max_retries = 5;
+    let mut delay = Duration::from_secs(2);
+    for attempt in 1..=max_retries {
+        let output = Command::new("gh")
+            .arg("api")
+            .arg(&endpoint)
+            .output()
+            .with_context(|| {
+                format!("failed to execute gh api for tag verification '{tag_name}'")
+            })?;
+        if output.status.success() {
+            return Ok(());
+        }
+        if attempt < max_retries {
+            std::thread::sleep(delay);
+            delay *= 2;
+        }
+    }
+    bail!(
+        "GitHub tag '{tag_name}' not visible via API after {max_retries} attempts; \
+         the tag may not have been pushed correctly"
+    )
+}
+
 fn release_asset_label_from_path(path: &str) -> String {
     Path::new(path)
         .file_name()
@@ -2603,6 +2727,72 @@ pub(crate) async fn execute_release_now_async(
             .as_deref()
             .ok_or_else(|| anyhow!("GitLab+GitHub project is missing the GitHub remote URL"))?;
 
+        // Push the tag to both remotes before creating either forge release.
+        // Each forge's release creation requires the tag to exist in its repo;
+        // pushing to both upfront avoids 422 errors from the secondary forge.
+        let tag_name_for_push = request.tag_name.clone();
+        let primary_url_owned = primary_url.to_string();
+        let repo_root_for_push = request.repo_root.clone();
+        let primary_remote = run_blocking_job(move || {
+            resolve_release_push_remote(&repo_root_for_push, Some(&primary_url_owned))
+        })
+        .await?;
+        emit_progress(vec![format!(
+            "Pushing tag '{}' to {}.",
+            request.tag_name, primary_remote
+        )]);
+        let repo_root_owned = request.repo_root.clone();
+        let remote_owned = primary_remote.clone();
+        let tag_owned = tag_name_for_push.clone();
+        let push_cancel = cancel.clone();
+        run_blocking_streaming_operation(
+            move |progress_tx| {
+                run_command_with_streaming(
+                    &repo_root_owned,
+                    "git",
+                    &["push".to_string(), remote_owned, tag_owned],
+                    RELEASE_NOW_TIMEOUT,
+                    "git push",
+                    "git",
+                    &push_cancel,
+                    &progress_tx,
+                )
+            },
+            &mut emit_progress,
+        )
+        .await?;
+
+        let secondary_url_owned = secondary_url.to_string();
+        let repo_root_for_push = request.repo_root.clone();
+        let secondary_remote = run_blocking_job(move || {
+            resolve_release_push_remote(&repo_root_for_push, Some(&secondary_url_owned))
+        })
+        .await?;
+        emit_progress(vec![format!(
+            "Pushing tag '{}' to {}.",
+            request.tag_name, secondary_remote
+        )]);
+        let repo_root_owned = request.repo_root.clone();
+        let remote_owned = secondary_remote.clone();
+        let tag_owned = tag_name_for_push.clone();
+        let push_cancel = cancel.clone();
+        run_blocking_streaming_operation(
+            move |progress_tx| {
+                run_command_with_streaming(
+                    &repo_root_owned,
+                    "git",
+                    &["push".to_string(), remote_owned, tag_owned],
+                    RELEASE_NOW_TIMEOUT,
+                    "git push",
+                    "git",
+                    &push_cancel,
+                    &progress_tx,
+                )
+            },
+            &mut emit_progress,
+        )
+        .await?;
+
         let mut gitlab_warnings = Vec::new();
         let release_notes_for_gitlab = rls_now_qd::finalize_release_notes_with_quick_downloads(
             request.release_notes_markdown.clone(),
@@ -3448,7 +3638,16 @@ async fn create_or_update_forge_release(
     })
     .await?;
 
+    // GitHub's release body has a 125,000 character limit.  Truncate
+    // release notes that exceed this to avoid HTTP 422 "Validation Failed".
+    let release_notes_markdown: Option<String> = if forge == crate::forge::ForgeKind::GitHub {
+        release_notes_markdown.map(|notes| truncate_github_release_notes(notes.to_string()))
+    } else {
+        release_notes_markdown.map(str::to_string)
+    };
+
     let notes_file = release_notes_markdown
+        .as_deref()
         .filter(|notes| !notes.trim().is_empty())
         .map(write_release_notes_file)
         .transpose()?;
@@ -3537,10 +3736,22 @@ async fn create_or_update_forge_release(
                 }
                 crate::forge::ForgeKind::GitLab => {
                     let repo_selector = repo_selector_from_cli_repo_args(&repo_args)?;
+                    let (small_artifacts, large_artifacts) =
+                        split_artifacts_by_size(artifact_files);
                     let asset_labels = artifact_files
                         .iter()
                         .map(|path| release_asset_label_from_path(path))
                         .collect::<Vec<_>>();
+                    if !large_artifacts.is_empty() {
+                        let names = large_artifacts
+                            .iter()
+                            .map(|p| release_asset_label_from_path(p))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        emit_progress(vec![format!(
+                            "Large artifact(s) [{names}] will be uploaded via GitLab Generic Packages API (exceeds 50MB project upload limit)."
+                        )]);
+                    }
 
                     let mut create_args = vec![
                         "release".to_string(),
@@ -3574,9 +3785,10 @@ async fn create_or_update_forge_release(
                     .await?;
 
                     let tag_name_owned = tag_name.to_string();
+                    let repo_selector_for_remove = repo_selector.clone();
                     let removed_assets = run_blocking_job(move || {
                         crate::glab::release::remove_conflicting_release_assets(
-                            &repo_selector,
+                            &repo_selector_for_remove,
                             &tag_name_owned,
                             &asset_labels,
                         )
@@ -3588,35 +3800,60 @@ async fn create_or_update_forge_release(
                         )]);
                     }
 
-                    let mut upload_args = vec![
-                        "release".to_string(),
-                        "upload".to_string(),
-                        tag_name.to_string(),
-                    ];
-                    upload_args.extend(
-                        artifact_files
-                            .iter()
-                            .map(|path| gitlab_release_asset_argument(path)),
-                    );
-                    upload_args.extend(repo_args.clone());
-                    let repo_root_owned = repo_root.to_string();
-                    let upload_cancel = cancel.clone();
-                    run_blocking_streaming_operation(
-                        move |progress_tx| {
-                            run_command_with_streaming(
-                                &repo_root_owned,
-                                cli_name,
-                                &upload_args,
-                                RELEASE_NOW_TIMEOUT,
-                                &format!("{cli_name} release upload"),
-                                cli_name,
-                                &upload_cancel,
-                                &progress_tx,
+                    // Upload small artifacts via glab release upload.
+                    if !small_artifacts.is_empty() {
+                        let mut upload_args = vec![
+                            "release".to_string(),
+                            "upload".to_string(),
+                            tag_name.to_string(),
+                        ];
+                        upload_args.extend(
+                            small_artifacts
+                                .iter()
+                                .map(|path| gitlab_release_asset_argument(path)),
+                        );
+                        upload_args.extend(repo_args.clone());
+                        let repo_root_owned = repo_root.to_string();
+                        let upload_cancel = cancel.clone();
+                        run_blocking_streaming_operation(
+                            move |progress_tx| {
+                                run_command_with_streaming(
+                                    &repo_root_owned,
+                                    cli_name,
+                                    &upload_args,
+                                    RELEASE_NOW_TIMEOUT,
+                                    &format!("{cli_name} release upload"),
+                                    cli_name,
+                                    &upload_cancel,
+                                    &progress_tx,
+                                )
+                            },
+                            emit_progress,
+                        )
+                        .await?;
+                    }
+
+                    // Upload large artifacts via Generic Packages API.
+                    for file_path in &large_artifacts {
+                        let file_name = release_asset_label_from_path(file_path);
+                        emit_progress(vec![format!(
+                            "Uploading large asset '{file_name}' via GitLab Generic Packages API..."
+                        )]);
+                        let repo_selector_owned = repo_selector.clone();
+                        let tag_name_owned = tag_name.to_string();
+                        let file_path_owned = file_path.clone();
+                        run_blocking_job(move || {
+                            gitlab_upload_large_asset(
+                                &repo_selector_owned,
+                                &tag_name_owned,
+                                &file_path_owned,
                             )
-                        },
-                        emit_progress,
-                    )
-                    .await?;
+                        })
+                        .await?;
+                        emit_progress(vec![format!(
+                            "Large asset '{file_name}' uploaded and linked."
+                        )]);
+                    }
                 }
             }
         } else {
@@ -3646,9 +3883,41 @@ async fn create_or_update_forge_release(
             )
             .await?;
 
+            // GitHub's API may need a moment to recognize a newly-pushed tag.
+            // Verify the tag is visible via the API before attempting to create
+            // the release, retrying a few times to avoid 422 "Validation Failed".
+            if forge == crate::forge::ForgeKind::GitHub {
+                let repo_selector = repo_selector_from_cli_repo_args(&repo_args)?;
+                let tag_name_for_verify = tag_name.to_string();
+                let repo_selector_for_verify = repo_selector.clone();
+                run_blocking_job(move || {
+                    verify_github_tag_exists(&repo_selector_for_verify, &tag_name_for_verify)
+                })
+                .await?;
+            }
+
             emit_progress(vec![format!(
                 "Creating {forge_label} release '{tag_name}'."
             )]);
+
+            // For GitLab, split artifacts by size: small files can be attached
+            // directly to `glab release create`, but large files (>50MB) must
+            // be uploaded via the Generic Packages API to avoid the project
+            // upload size limit.
+            let (small_artifacts, large_artifacts) = match forge {
+                crate::forge::ForgeKind::GitLab => split_artifacts_by_size(artifact_files),
+                _ => (artifact_files.to_vec(), Vec::new()),
+            };
+            if !large_artifacts.is_empty() {
+                let names = large_artifacts
+                    .iter()
+                    .map(|p| release_asset_label_from_path(p))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                emit_progress(vec![format!(
+                    "Large artifact(s) [{names}] will be uploaded via GitLab Generic Packages API (exceeds 50MB project upload limit)."
+                )]);
+            }
 
             let mut create_args = vec![
                 "release".to_string(),
@@ -3661,7 +3930,7 @@ async fn create_or_update_forge_release(
                 }
                 crate::forge::ForgeKind::GitLab => {
                     create_args.extend(
-                        artifact_files
+                        small_artifacts
                             .iter()
                             .map(|path| gitlab_release_asset_argument(path)),
                     );
@@ -3695,6 +3964,31 @@ async fn create_or_update_forge_release(
                 emit_progress,
             )
             .await?;
+
+            // Upload large GitLab artifacts via Generic Packages API.
+            if !large_artifacts.is_empty() {
+                let repo_selector = repo_selector_from_cli_repo_args(&repo_args)?;
+                for file_path in &large_artifacts {
+                    let file_name = release_asset_label_from_path(file_path);
+                    emit_progress(vec![format!(
+                        "Uploading large asset '{file_name}' via GitLab Generic Packages API..."
+                    )]);
+                    let repo_selector_owned = repo_selector.clone();
+                    let tag_name_owned = tag_name.to_string();
+                    let file_path_owned = file_path.clone();
+                    run_blocking_job(move || {
+                        gitlab_upload_large_asset(
+                            &repo_selector_owned,
+                            &tag_name_owned,
+                            &file_path_owned,
+                        )
+                    })
+                    .await?;
+                    emit_progress(vec![format!(
+                        "Large asset '{file_name}' uploaded and linked."
+                    )]);
+                }
+            }
         }
 
         Ok(())
@@ -3983,6 +4277,43 @@ fn write_release_notes_file(notes: &str) -> Result<PathBuf> {
     fs::write(&file_path, notes)
         .with_context(|| format!("failed to write release notes to '{}'", file_path.display()))?;
     Ok(file_path)
+}
+
+/// GitHub's release body has a maximum of 125,000 characters.
+const GITHUB_RELEASE_BODY_MAX_CHARS: usize = 125_000;
+
+/// Truncates release notes to fit within GitHub's body size limit.
+/// If truncation is needed, a notice is appended.
+fn truncate_github_release_notes(notes: String) -> String {
+    if notes.chars().count() <= GITHUB_RELEASE_BODY_MAX_CHARS {
+        return notes;
+    }
+    let truncated: String = notes
+        .chars()
+        .take(GITHUB_RELEASE_BODY_MAX_CHARS - 200)
+        .collect();
+    format!(
+        "{truncated}\n\n---\n\n> ⚠️ Release notes truncated to fit GitHub's 125,000 character limit. See the full changelog in the repository.\n"
+    )
+}
+
+#[cfg(test)]
+mod truncate_tests {
+    use super::*;
+
+    #[test]
+    fn truncate_github_release_notes_short_notes_unchanged() {
+        let notes = "# v1.0.0\nShort release notes.".to_string();
+        assert_eq!(truncate_github_release_notes(notes.clone()), notes);
+    }
+
+    #[test]
+    fn truncate_github_release_notes_long_notes_truncated() {
+        let notes = "x".repeat(GITHUB_RELEASE_BODY_MAX_CHARS + 5000);
+        let result = truncate_github_release_notes(notes);
+        assert!(result.chars().count() <= GITHUB_RELEASE_BODY_MAX_CHARS);
+        assert!(result.contains("truncated"));
+    }
 }
 
 #[cfg(test)]
