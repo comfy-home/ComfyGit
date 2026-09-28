@@ -890,15 +890,23 @@ fn detect_manifests(cwd: &Path) -> Result<Vec<DetectedManifest>> {
     ];
 
     let mut manifests = Vec::new();
+    let mut seen_paths = std::collections::HashSet::new();
     for (file_name, format, default_key) in CANDIDATES {
         let path = cwd.join(file_name);
-        if path.is_file() {
-            manifests.push(DetectedManifest {
-                relative_path: file_name.to_string(),
-                format: *format,
-                default_key: default_key.to_string(),
-            });
+        if !path.is_file() {
+            continue;
         }
+        // On case-insensitive filesystems distinct candidate names (e.g.
+        // `VERSION` vs `version`) resolve to the same file — canonicalize to
+        // avoid detecting it twice.
+        if !seen_paths.insert(best_effort_canonicalize(&path)) {
+            continue;
+        }
+        manifests.push(DetectedManifest {
+            relative_path: file_name.to_string(),
+            format: *format,
+            default_key: default_key.to_string(),
+        });
     }
 
     for entry in fs::read_dir(cwd).with_context(|| format!("failed to read {}", cwd.display()))? {

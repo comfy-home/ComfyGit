@@ -186,6 +186,32 @@ fn normalize_lexical(path: &Path) -> PathBuf {
     result
 }
 
+/// Renders a path with `/` separators so rewritten config values stay
+/// platform-agnostic (`Path::display` would emit `\` on Windows, while
+/// Cargo/npm/tsc manifests conventionally use `/`).
+fn to_forward_slash_string(path: &Path) -> String {
+    let mut out = String::new();
+    for comp in path.components() {
+        let segment = match comp {
+            Component::Prefix(p) => p.as_os_str().to_string_lossy().into_owned(),
+            Component::RootDir => {
+                if out.is_empty() {
+                    out.push('/');
+                }
+                continue;
+            }
+            Component::CurDir => ".".to_string(),
+            Component::ParentDir => "..".to_string(),
+            Component::Normal(s) => s.to_string_lossy().into_owned(),
+        };
+        if !out.is_empty() && !out.ends_with('/') {
+            out.push('/');
+        }
+        out.push_str(&segment);
+    }
+    out
+}
+
 /// Recomputes a single relative path string.
 ///
 /// `current_value` is relative to `resolve_dir`.  It is resolved to an absolute
@@ -209,7 +235,7 @@ fn recompute_path(
     if !absolute.starts_with(project_root)
         && let Some(rel) = diff_paths(&absolute, recompute_dir)
     {
-        return Some(rel.to_string_lossy().into_owned());
+        return Some(to_forward_slash_string(&rel));
     }
     None
 }
