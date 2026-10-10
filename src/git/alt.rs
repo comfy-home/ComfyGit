@@ -357,11 +357,16 @@ fn branch_exists(existing_branches: &[String], candidate: &str) -> bool {
 fn validate_deviation_creation_source(current_branch: &str, kind: &DeviationKind) -> Result<()> {
     let (base, _) = split_specific_suffix(current_branch);
     // SUB branches can be created from any branch (including custom-named ones).
-    // alt and OT still require a dev branch or release-line branch.
+    // alt and OT still require a dev branch, a release-line branch, or an
+    // existing deviation branch of a different kind (cross-type nesting, e.g.
+    // alt within SUB).
     if kind.command == "sub" {
         return Ok(());
     }
-    if !(base.contains("-dev") || kind.command == "ot" && base.ends_with(".x")) {
+    if !(base.contains("-dev")
+        || kind.command == "ot" && base.ends_with(".x")
+        || is_cross_deviation_root(&base, kind))
+    {
         bail!(
             "cg new {} can only be run from a dev branch or an existing deviation branch; \
              current branch is '{}'",
@@ -370,6 +375,24 @@ fn validate_deviation_creation_source(current_branch: &str, kind: &DeviationKind
         )
     }
     Ok(())
+}
+
+/// True when `base` is a deviation branch of a *different* kind than `kind`
+/// (e.g. a SUB branch when creating an alt), so it can serve as a nesting root.
+fn is_cross_deviation_root(base: &str, kind: &DeviationKind) -> bool {
+    let Some((pos, marker)) = find_rightmost_marker(base) else {
+        return false;
+    };
+    if marker == kind.marker {
+        return false;
+    }
+    let suffix = &base[pos + marker.len()..];
+    let digit_len = suffix.chars().take_while(|ch| ch.is_ascii_digit()).count();
+    if digit_len == 0 {
+        return false;
+    }
+    let rest = &suffix[digit_len..];
+    rest.chars().all(|ch| ch.is_ascii_uppercase()) && !base[..pos].is_empty()
 }
 
 fn suggest_deviation_branch_name_options(
@@ -397,6 +420,11 @@ fn suggest_deviation_branch_name_options(
             let next_letter = next_letter_deviation_suffix(&numeric_base, existing_branches, kind)?;
             format!("{}{}", numeric_base, next_letter)
         }
+        DeviationSourceKind::NestedDeviation => {
+            let nested_base = base;
+            let next_number = next_numeric_deviation_number(&nested_base, existing_branches, kind);
+            format!("{}{}{}", nested_base, kind.marker, next_number)
+        }
         DeviationSourceKind::CustomBranch => {
             let custom_base = base;
             let next_number = next_numeric_deviation_number(&custom_base, existing_branches, kind);
@@ -419,6 +447,9 @@ enum DeviationSourceKind {
     LetterDeviation,
     /// Any non-dev branch used as a SUB source (e.g. "Custom-Changes").
     CustomBranch,
+    /// A deviation branch of a different kind used as a nesting root
+    /// (e.g. "v0.1.5-dev-SUB1" or "Custom-Changes-SUB1" when creating an alt).
+    NestedDeviation,
 }
 
 fn classify_deviation_source(base: &str, kind: &DeviationKind) -> Result<DeviationSourceKind> {
@@ -434,16 +465,21 @@ fn classify_deviation_source(base: &str, kind: &DeviationKind) -> Result<Deviati
         return Ok(DeviationSourceKind::DevBranch);
     }
 
+    // An existing deviation branch of a different kind can be nested further
+    // (e.g. alt within SUB: "Custom-Changes-SUB1" -> "Custom-Changes-SUB1-alt1").
+    if is_cross_deviation_root(base, kind) {
+        return Ok(DeviationSourceKind::NestedDeviation);
+    }
+
     // SUB branches can be created from any branch, including custom-named ones.
     if kind.command == "sub" {
         return Ok(DeviationSourceKind::CustomBranch);
     }
 
     bail!(
-        "cg new {} can only be run from a dev branch or an existing {} branch; \
+        "cg new {} can only be run from a dev branch or an existing deviation branch; \
          current branch base is '{}'",
         kind.command,
-        kind.label,
         base
     )
 }
@@ -1261,6 +1297,61 @@ mod tests {
     #[test]
     fn validate_alt_still_rejects_custom_branch() {
         assert!(validate_deviation_creation_source("Custom-Changes", &ALT_KIND).is_err());
+    }
+
+    #[test]
+    fn validate_alt_allows_sub_branch() {
+        assert!(validate_deviation_creation_source("v0.1.5-dev-SUB1", &ALT_KIND).is_ok());
+        assert!(validate_deviation_creation_source("v0.1.5-dev-SUB1A", &ALT_KIND).is_ok());
+        assert!(validate_deviation_creation_source("Custom-Changes-SUB1", &ALT_KIND).is_ok());
+        assert!(validate_deviation_creation_source("main-SUB1", &ALT_KIND).is_ok());
+    }
+
+    #[test]
+    fn validate_alt_rejects_same_kind_deviation_on_custom_root() {
+        assert!(validate_deviation_creation_source("Custom-Changes-alt1", &ALT_KIND).is_err());
+    }
+
+    #[test]
+    fn suggest_alt_branch_name_options_from_sub_branch() {
+        let options = suggest_deviation_branch_name_options("v0.1.5-dev-SUB1", &[], &ALT_KIND)
+            .expect("suggest options");
+        assert_eq!(options[0].preview(), "v0.1.5-dev-SUB1-alt1");
+    }
+
+    #[test]
+    fn suggest_alt_branch_name_options_from_custom_rooted_sub_branch() {
+        let options = suggest_deviation_branch_name_options("Custom-Changes-SUB1", &[], &ALT_KIND)
+            .expect("suggest options");
+        assert_eq!(options[0].preview(), "Custom-Changes-SUB1-alt1");
+    }
+
+    #[test]
+    fn suggest_alt_branch_name_options_from_letter_sub_branch() {
+        let options = suggest_deviation_branch_name_options("Custom-Changes-SUB1A", &[], &ALT_KIND)
+            .expect("suggest options");
+        assert_eq!(options[0].preview(), "Custom-Changes-SUB1A-alt1");
+    }
+
+    #[test]
+    fn suggest_alt_branch_name_options_from_sub_branch_skips_existing() {
+        let existing = vec![
+            "Custom-Changes-SUB1-alt1".to_string(),
+            "Custom-Changes-SUB1-alt2".to_string(),
+        ];
+        let options =
+            suggest_deviation_branch_name_options("Custom-Changes-SUB1", &existing, &ALT_KIND)
+                .expect("suggest options");
+        assert_eq!(options[0].preview(), "Custom-Changes-SUB1-alt3");
+    }
+
+    #[test]
+    fn alt_merge_parent_nested_under_custom_rooted_sub() {
+        let existing = vec!["Custom-Changes-SUB1".to_string()];
+        assert_eq!(
+            deviation_merge_parent_branch("Custom-Changes-SUB1-alt1", &existing).as_deref(),
+            Some("Custom-Changes-SUB1")
+        );
     }
 
     #[test]
