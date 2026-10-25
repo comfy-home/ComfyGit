@@ -9,7 +9,10 @@ use std::{thread, time::Duration};
 
 use crate::{
     forge::ForgeKind,
-    git::{GitCancellation, run_git_checked_with_cancel, switch_to_existing_branch_after_merge},
+    git::{
+        GitCancellation, fetch_configured_remotes, run_git_checked_with_cancel,
+        switch_to_existing_branch_after_merge,
+    },
 };
 use anyhow::{Context, Result, bail};
 
@@ -85,7 +88,11 @@ pub(crate) fn finish_after_pull_request_merge(
     // from the correct remote first.
     println!("Syncing from remote...");
     println!();
-    run_git_checked_with_cancel(repo_root, &["fetch", "--all"], cancel.clone())?;
+    // Fetch only ComfyGit-configured remotes rather than `git fetch --all`:
+    // extra remotes that ComfyGit does not manage (e.g. a local VM remote that
+    // may be offline) must not abort the post-merge sync when unreachable.
+    let configured_remotes = crate::workflow::cli_sync::configured_remote_specs_for_repo(repo_root);
+    fetch_configured_remotes(repo_root, &configured_remotes, cancel.clone())?;
     sync_current_branch(repo_root, cancel)?;
     Ok(())
 }
