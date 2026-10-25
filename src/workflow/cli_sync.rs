@@ -12,8 +12,11 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use crossterm::{
+    cursor::{MoveToColumn, MoveToNextLine, MoveUp},
     event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
-    terminal::{disable_raw_mode, enable_raw_mode},
+    queue,
+    style::Print,
+    terminal::{Clear, ClearType, disable_raw_mode, enable_raw_mode},
 };
 
 use crate::{
@@ -246,8 +249,9 @@ fn offer_unconfigured_remote_sync(repo_root: &str, report: &MirrorSyncReport) ->
 }
 
 /// Shows the extra-remotes menu and waits up to
-/// [`EXTRA_REMOTES_PROMPT_SECONDS`] for a choice. Returns `true` when the user
-/// picks "Yes. Sync all."; defaults to `false` on Enter, Esc, timeout, or when
+/// [`EXTRA_REMOTES_PROMPT_SECONDS`] for a choice. Arrow keys move the
+/// selection, Enter confirms, `1`/`2` pick directly. Returns `true` when the
+/// user picks "Yes. Sync all."; defaults to `false` on Esc, timeout, or when
 /// raw terminal input is unavailable.
 fn prompt_sync_unconfigured_remotes(remotes: &[(String, String)]) -> Result<bool> {
     println!();
@@ -273,17 +277,19 @@ fn prompt_sync_unconfigured_remotes(remotes: &[(String, String)]) -> Result<bool
     };
 
     let deadline = Instant::now() + Duration::from_secs(EXTRA_REMOTES_PROMPT_SECONDS);
+    let mut selected = 0usize;
+    let mut rendered: Option<(usize, u64)> = None;
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
             println!("\r\x1b[2K{ANSI_DARK_GREY}Continuing with option 1 (No).{ANSI_RESET}");
             return Ok(false);
         }
-        print!(
-            "\r\x1b[2K{ANSI_DARK_GREY}Continuing with option 1 in {}s — press 1 or 2, or Enter for the default.{ANSI_RESET}",
-            remaining.as_secs().max(1)
-        );
-        io::stdout().flush()?;
+        let seconds_left = remaining.as_secs().max(1);
+        if rendered != Some((selected, seconds_left)) {
+            render_extra_remotes_tail(selected, seconds_left)?;
+            rendered = Some((selected, seconds_left));
+        }
 
         if !event::poll(Duration::from_millis(200)).context("failed to poll remote sync input")? {
             continue;
@@ -295,13 +301,20 @@ fn prompt_sync_unconfigured_remotes(remotes: &[(String, String)]) -> Result<bool
             continue;
         }
         match key.code {
+            KeyCode::Up | KeyCode::Down => {
+                selected = 1 - selected;
+            }
+            KeyCode::Enter => {
+                println!("\r\x1b[2K");
+                return Ok(selected == 1);
+            }
+            KeyCode::Char('1') | KeyCode::Esc => {
+                println!("\r\x1b[2K");
+                return Ok(false);
+            }
             KeyCode::Char('2') => {
                 println!("\r\x1b[2K");
                 return Ok(true);
-            }
-            KeyCode::Char('1') | KeyCode::Enter | KeyCode::Esc => {
-                println!("\r\x1b[2K");
-                return Ok(false);
             }
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 println!("\r\x1b[2K");
@@ -310,6 +323,44 @@ fn prompt_sync_unconfigured_remotes(remotes: &[(String, String)]) -> Result<bool
             _ => {}
         }
     }
+}
+
+/// Redraws the two menu options and the countdown line in place. The cursor
+/// is expected on the countdown line (the last line of the menu block); it is
+/// moved up to the first option, all three lines are rewritten, and the
+/// cursor is left on the countdown line again.
+fn render_extra_remotes_tail(selected: usize, seconds_left: u64) -> Result<()> {
+    let mut stdout = io::stdout();
+    let option_line = |marked: bool, label: &str| {
+        if marked {
+            format!("{ANSI_GREEN}> {label}{ANSI_RESET}")
+        } else {
+            format!("  {label}")
+        }
+    };
+    queue!(
+        stdout,
+        MoveToColumn(0),
+        MoveUp(3),
+        Clear(ClearType::CurrentLine),
+        Print(option_line(
+            selected == 0,
+            "1. No. Sync only those configured in CG."
+        )),
+        MoveToNextLine(1),
+        Clear(ClearType::CurrentLine),
+        Print(option_line(selected == 1, "2. Yes. Sync all.")),
+        MoveToNextLine(2),
+        Clear(ClearType::CurrentLine),
+        Print(format!(
+            "{ANSI_DARK_GREY}Continuing with option {} in {}s — use ↑/↓ then Enter, or press 1/2.{ANSI_RESET}",
+            selected + 1,
+            seconds_left
+        )),
+    )
+    .context("failed to render remote sync menu")?;
+    stdout.flush()?;
+    Ok(())
 }
 
 struct CliSyncRawModeGuard;
