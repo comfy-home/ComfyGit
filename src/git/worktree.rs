@@ -426,8 +426,12 @@ pub(crate) fn run_wt_end(
         merge_result.target_branch
     );
     // Fetch before sync: after a remote merge, the local remote-tracking refs
-    // are stale and need to be refreshed from all remotes.
-    crate::git::run_git_checked_with_cancel(&main_root_str, &["fetch", "--all"], cancel.clone())?;
+    // are stale and need to be refreshed.  Only ComfyGit-configured remotes are
+    // fetched (not `--all`): extra remotes such as a local VM mirror may be
+    // unreachable and must not abort the worktree merge flow.
+    let configured_remotes =
+        crate::workflow::cli_sync::configured_remote_specs_for_repo(&main_root_str);
+    crate::git::fetch_configured_remotes(&main_root_str, &configured_remotes, cancel.clone())?;
     crate::git::switch_to_existing_branch_after_merge(&main_root_str, &merge_result.target_branch)?;
     crate::git::sync_current_branch(&main_root_str, cancel.clone())?;
 
