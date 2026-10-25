@@ -431,9 +431,10 @@ pub(crate) fn run_wt_end(
     // unreachable and must not abort the worktree merge flow.
     let configured_remotes =
         crate::workflow::cli_sync::configured_remote_specs_for_repo(&main_root_str);
-    crate::git::fetch_configured_remotes(&main_root_str, &configured_remotes, cancel.clone())?;
+    let fetched_remotes =
+        crate::git::fetch_configured_remotes(&main_root_str, &configured_remotes, cancel.clone())?;
     crate::git::switch_to_existing_branch_after_merge(&main_root_str, &merge_result.target_branch)?;
-    crate::git::sync_current_branch(&main_root_str, cancel.clone())?;
+    crate::git::sync_current_branch(&main_root_str, &fetched_remotes, cancel.clone())?;
 
     // Step 4: Restore config paths in the main worktree.
     let restored = crate::git::restore_paths_after_merge(&main_root, &worktree_toplevel)
