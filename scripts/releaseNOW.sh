@@ -55,6 +55,14 @@ ErrorActionPreference() {
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 DIST_ROOT="${PROJECT_ROOT}/dist"
+
+# Pin the cargo target directory. This repo can live inside a parent
+# checkout whose .cargo/config.toml redirects build output (e.g. the
+# comfyhome workspace sets [build] target-dir), because cargo collects
+# config files while walking up the directory tree. Without the pin,
+# `cargo build` writes outside PROJECT_ROOT and get_binary_path() cannot
+# find the binaries.
+export CARGO_TARGET_DIR="${PROJECT_ROOT}/target"
 BIN_NAME='cg'
 DELEGATE_BIN_NAME='ComfyGit'
 NAME='ComfyGit'
@@ -210,20 +218,25 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m' # No Color
 
+# All log output goes to stderr: functions invoked via $(...) capture stdout,
+# so log lines on stdout would both pollute captured return values (e.g.
+# binary_path=$(build_release_binary ...)) and hide error messages when a
+# captured function fails (the message lands in the variable, then `set -e`
+# exits the script silently).
 log_info() {
-    echo -e "${CYAN}$1${NC}"
+    echo -e "${CYAN}$1${NC}" >&2
 }
 
 log_success() {
-    echo -e "${GREEN}$1${NC}"
+    echo -e "${GREEN}$1${NC}" >&2
 }
 
 log_warning() {
-    echo -e "${YELLOW}$1${NC}"
+    echo -e "${YELLOW}$1${NC}" >&2
 }
 
 log_error() {
-    echo -e "${RED}$1${NC}"
+    echo -e "${RED}$1${NC}" >&2
 }
 
 # Target definitions
