@@ -8,8 +8,8 @@ use anyhow::{Context, Result, bail};
 use crate::forge::{ForgeKind, detect_forge_from_remote_url};
 
 use super::{
-    current_branch_with_cancel, git_remote_names, resolve_push_remote_name, run_git_checked,
-    run_git_with_cancel,
+    GitCancellation, current_branch_with_cancel, git_remote_names, resolve_push_remote_name,
+    run_git_checked, run_git_checked_with_cancel, run_git_with_cancel,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -168,6 +168,78 @@ pub fn push_mirror_sync(
     Ok(lines)
 }
 
+/// Fetches only the remotes configured in ComfyGit for this repository.
+///
+/// `configured_remotes` may contain remote names or URLs (as stored in the
+/// project config); each is resolved to a git remote name before fetching.
+/// When no configured remote resolves, falls back to a plain `git fetch`,
+/// which only touches the default/upstream remote. Extra remotes that are not
+/// part of the ComfyGit configuration (e.g. a local VM mirror that may be
+/// offline) are never fetched, so an unreachable one cannot abort the flow
+/// the way `git fetch --all` does.
+pub fn fetch_configured_remotes(
+    repo_root: &str,
+    configured_remotes: &[String],
+    cancel: Option<GitCancellation>,
+) -> Result<()> {
+    let mut fetched: Vec<String> = Vec::new();
+    for spec in configured_remotes {
+        let spec = spec.trim();
+        if spec.is_empty() {
+            continue;
+        }
+        let remote = match resolve_push_remote_name(repo_root, spec) {
+            Ok(remote) => remote,
+            Err(error) => {
+                eprintln!("warning: could not resolve configured remote '{spec}': {error:#}");
+                continue;
+            }
+        };
+        if fetched.iter().any(|done| done == &remote) {
+            continue;
+        }
+        let output = run_git_with_cancel(repo_root, &["fetch", &remote], cancel.clone())?;
+        if !output.success {
+            let details = output.stderr.trim();
+            bail!("git [\"fetch\", \"{remote}\"] failed in {repo_root}: {details}");
+        }
+        // `git fetch` reports remote updates on stderr even on success.
+        let stderr = output.stderr.trim();
+        if !stderr.is_empty() {
+            eprintln!("{stderr}");
+        }
+        fetched.push(remote);
+    }
+
+    if fetched.is_empty() {
+        run_git_checked_with_cancel(repo_root, &["fetch"], cancel)?;
+    }
+    Ok(())
+}
+
+/// Lists git remotes that are not in `configured_names`, as (name, url) pairs.
+/// Used to detect extra remotes (e.g. a local VM mirror) that ComfyGit does
+/// not manage, so the user can be offered to sync them explicitly.
+pub fn unconfigured_remotes(
+    repo_root: &str,
+    configured_names: &[&str],
+) -> Result<Vec<(String, String)>> {
+    let mut extras = Vec::new();
+    for name in git_remote_names(repo_root)? {
+        if configured_names
+            .iter()
+            .any(|configured| configured == &name)
+        {
+            continue;
+        }
+        let url = run_git_checked(repo_root, &["remote", "get-url", &name])
+            .map(|url| url.trim().to_string())
+            .unwrap_or_default();
+        extras.push((name, url));
+    }
+    Ok(extras)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -217,5 +289,111 @@ mod tests {
         };
         assert!(out_of_sync.status_colored().contains("38;5;196m"));
         assert!(out_of_sync.status_colored().contains("out of sync"));
+    }
+
+    fn temp_dir(test_name: &str) -> std::path::PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "comfygit-sync-tests-{}-{}-{}",
+            test_name,
+            std::process::id(),
+            unique
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    fn init_repo(path: &std::path::Path, bare: bool) {
+        let path = path.display().to_string();
+        if bare {
+            run_git_checked(&path, &["init", "--bare"]).expect("init bare repo");
+        } else {
+            run_git_checked(&path, &["init"]).expect("init repo");
+            run_git_checked(&path, &["config", "user.name", "ComfyGit Tests"])
+                .expect("configure user.name");
+            run_git_checked(&path, &["config", "user.email", "tests@comfygit.invalid"])
+                .expect("configure user.email");
+            run_git_checked(&path, &["commit", "--allow-empty", "-m", "init"])
+                .expect("create initial commit");
+        }
+    }
+
+    #[test]
+    fn unconfigured_remotes_returns_remotes_outside_the_configured_set() {
+        let repo_dir = temp_dir("unconfigured");
+        init_repo(&repo_dir, false);
+        let repo_root = repo_dir.display().to_string();
+        run_git_checked(
+            &repo_root,
+            &["remote", "add", "gitLAB", "git@gitlab.com:org/repo.git"],
+        )
+        .expect("add gitLAB remote");
+        run_git_checked(
+            &repo_root,
+            &["remote", "add", "gitHUB", "git@github.com:org/repo.git"],
+        )
+        .expect("add gitHUB remote");
+        run_git_checked(&repo_root, &["remote", "add", "win", "vmhost:C:/repo.git"])
+            .expect("add win remote");
+
+        let extras = unconfigured_remotes(&repo_root, &["gitLAB", "gitHUB"])
+            .expect("list unconfigured remotes");
+        assert_eq!(
+            extras,
+            vec![("win".to_string(), "vmhost:C:/repo.git".to_string())]
+        );
+
+        let none = unconfigured_remotes(&repo_root, &["gitLAB", "gitHUB", "win"])
+            .expect("no extras when all remotes are configured");
+        assert!(none.is_empty());
+
+        std::fs::remove_dir_all(&repo_dir).ok();
+    }
+
+    #[test]
+    fn fetch_configured_remotes_does_not_touch_unlisted_remotes() {
+        // `win` points at a path that does not exist: `git fetch --all` would
+        // fail on it, but fetching only the configured remote must succeed.
+        let remote_dir = temp_dir("fetch-remote");
+        init_repo(&remote_dir, true);
+        let repo_dir = temp_dir("fetch-configured");
+        init_repo(&repo_dir, false);
+        let repo_root = repo_dir.display().to_string();
+        let remote_url = remote_dir.display().to_string();
+        run_git_checked(&repo_root, &["remote", "add", "gitLAB", &remote_url])
+            .expect("add gitLAB remote");
+        run_git_checked(
+            &repo_root,
+            &["remote", "add", "win", "/nonexistent/win-remote.git"],
+        )
+        .expect("add win remote");
+
+        // The configured spec may also be the URL rather than the remote name.
+        fetch_configured_remotes(&repo_root, &[remote_url], None)
+            .expect("fetch only the configured remote");
+
+        // With no resolvable configured remote, falls back to a plain fetch.
+        let fallback_dir = temp_dir("fetch-fallback");
+        init_repo(&fallback_dir, false);
+        let fallback_root = fallback_dir.display().to_string();
+        run_git_checked(
+            &fallback_root,
+            &["remote", "add", "origin", &remote_dir.display().to_string()],
+        )
+        .expect("add origin remote");
+        run_git_checked(
+            &fallback_root,
+            &["remote", "add", "win", "/nonexistent/win-remote.git"],
+        )
+        .expect("add win remote");
+        fetch_configured_remotes(&fallback_root, &[], None)
+            .expect("plain fetch uses only the default remote");
+
+        std::fs::remove_dir_all(&remote_dir).ok();
+        std::fs::remove_dir_all(&repo_dir).ok();
+        std::fs::remove_dir_all(&fallback_dir).ok();
     }
 }
