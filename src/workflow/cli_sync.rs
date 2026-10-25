@@ -7,9 +7,14 @@ use std::{
     env,
     io::{self, Write},
     path::Path,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, bail};
+use crossterm::{
+    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
+    terminal::{disable_raw_mode, enable_raw_mode},
+};
 
 use crate::{
     cli::{
@@ -17,7 +22,10 @@ use crate::{
         mirror_sync_after_merge_for_repo, project_root, scope_root,
     },
     config::{ConfigStore, ProjectConfig, ProjectType},
-    git::{check_mirror_sync, push_mirror_sync},
+    git::{
+        MirrorSyncReport, check_mirror_sync, push_mirror_sync, run_git_with_cancel,
+        unconfigured_remotes,
+    },
 };
 
 const ANSI_CYAN: &str = "\x1b[36m";
@@ -26,6 +34,8 @@ const ANSI_BRIGHT_GREEN: &str = "\x1b[38;2;94;255;0m"; // RGB: 94, 255, 0
 const ANSI_YELLOW: &str = "\x1b[33m";
 const ANSI_DARK_GREY: &str = "\x1b[90m";
 const ANSI_RESET: &str = "\x1b[0m";
+
+const EXTRA_REMOTES_PROMPT_SECONDS: u64 = 10;
 
 pub(crate) fn run_sync() -> Result<()> {
     run_sync_with_options(false)
@@ -118,6 +128,28 @@ fn run_mirror_sync_for_project(
     run_mirror_sync_push(repo_root, gitlab_remote, github_remote, skip_confirm)
 }
 
+/// Remote specs (names or URLs, as stored in the project config) that
+/// ComfyGit manages for the repository at `repo_root`. Best-effort: returns an
+/// empty list when the config cannot be loaded or no project covers the repo,
+/// in which case callers fall back to default-remote behavior.
+pub(crate) fn configured_remote_specs_for_repo(repo_root: &str) -> Vec<String> {
+    let canonical_repo_root = best_effort_canonicalize(Path::new(repo_root));
+    let Ok(config) = ConfigStore::locate().and_then(|store| store.load()) else {
+        return Vec::new();
+    };
+    let cwd = env::current_dir()
+        .map(|cwd| best_effort_canonicalize(&cwd))
+        .unwrap_or_else(|_| canonical_repo_root.clone());
+    let Ok(project) = find_project_for_cwd(&config.projects, &canonical_repo_root)
+        .or_else(|_| find_project_for_cwd(&config.projects, &cwd))
+    else {
+        return Vec::new();
+    };
+    configured_dual_remotes(project, &canonical_repo_root)
+        .map(|(primary, secondary)| [primary, secondary].into_iter().flatten().collect())
+        .unwrap_or_default()
+}
+
 fn run_mirror_sync_push(
     repo_root: &str,
     gitlab_remote: Option<String>,
@@ -136,38 +168,163 @@ fn run_mirror_sync_push(
 
     if report.in_sync() {
         println!("{ANSI_GREEN}GitLab and GitHub remotes are already in sync.{ANSI_RESET}");
-        return Ok(());
-    }
-
-    if !skip_confirm && !prompt_yes_no("Push the current branch to both remotes now?", false)? {
+    } else if !skip_confirm
+        && !prompt_yes_no("Push the current branch to both remotes now?", false)?
+    {
         println!("Sync skipped.");
+    } else {
+        let lines = push_mirror_sync(
+            repo_root,
+            gitlab_remote.as_deref(),
+            github_remote.as_deref(),
+        )?;
+        for line in lines {
+            println!("  {ANSI_GREEN}{line}{ANSI_RESET}");
+        }
+
+        let follow_up = check_mirror_sync(
+            repo_root,
+            gitlab_remote.as_deref(),
+            github_remote.as_deref(),
+        )?;
+        println!();
+        if follow_up.in_sync() {
+            println!("{ANSI_BRIGHT_GREEN}GitLab and GitHub remotes are now in sync.{ANSI_RESET}");
+        } else {
+            println!(
+                "{ANSI_YELLOW}Sync finished, but remotes still appear out of sync.{ANSI_RESET}"
+            );
+            for line in follow_up.summary_lines() {
+                println!("  {line}");
+            }
+        }
+    }
+
+    offer_unconfigured_remote_sync(repo_root, &report)
+}
+
+/// Offers to push the current branch to git remotes that are not configured
+/// in ComfyGit (e.g. a local VM mirror). Defaults to skipping them after a
+/// short timeout so extra remotes never block the sync flow; failures on
+/// extra remotes are reported as warnings only.
+fn offer_unconfigured_remote_sync(repo_root: &str, report: &MirrorSyncReport) -> Result<()> {
+    let extras = unconfigured_remotes(repo_root, &[&report.gitlab_remote, &report.github_remote])?;
+    if extras.is_empty() {
         return Ok(());
     }
 
-    let lines = push_mirror_sync(
-        repo_root,
-        gitlab_remote.as_deref(),
-        github_remote.as_deref(),
-    )?;
-    for line in lines {
-        println!("  {ANSI_GREEN}{line}{ANSI_RESET}");
+    if !prompt_sync_unconfigured_remotes(&extras)? {
+        return Ok(());
     }
 
-    let follow_up = check_mirror_sync(
-        repo_root,
-        gitlab_remote.as_deref(),
-        github_remote.as_deref(),
-    )?;
     println!();
-    if follow_up.in_sync() {
-        println!("{ANSI_BRIGHT_GREEN}GitLab and GitHub remotes are now in sync.{ANSI_RESET}");
-    } else {
-        println!("{ANSI_YELLOW}Sync finished, but remotes still appear out of sync.{ANSI_RESET}");
-        for line in follow_up.summary_lines() {
-            println!("  {line}");
+    for (remote, _url) in &extras {
+        match run_git_with_cancel(repo_root, &["push", remote, &report.branch], None) {
+            Ok(output) if output.success => {
+                println!(
+                    "  {ANSI_GREEN}Pushed '{}' to remote '{remote}'.{ANSI_RESET}",
+                    report.branch
+                );
+            }
+            Ok(output) => {
+                let details = format!("{}{}", output.stdout, output.stderr);
+                eprintln!(
+                    "{ANSI_YELLOW}Warning: failed to push '{}' to remote '{remote}': {}{ANSI_RESET}",
+                    report.branch,
+                    details.trim()
+                );
+            }
+            Err(error) => {
+                eprintln!(
+                    "{ANSI_YELLOW}Warning: failed to push '{}' to remote '{remote}': {error:#}{ANSI_RESET}",
+                    report.branch
+                );
+            }
         }
     }
     Ok(())
+}
+
+/// Shows the extra-remotes menu and waits up to
+/// [`EXTRA_REMOTES_PROMPT_SECONDS`] for a choice. Returns `true` when the user
+/// picks "Yes. Sync all."; defaults to `false` on Enter, Esc, timeout, or when
+/// raw terminal input is unavailable.
+fn prompt_sync_unconfigured_remotes(remotes: &[(String, String)]) -> Result<bool> {
+    println!();
+    println!("{ANSI_CYAN}ComfyGit found another remote(s) for this project:{ANSI_RESET}");
+    println!();
+    for (name, url) in remotes {
+        if url.is_empty() {
+            println!("  {ANSI_YELLOW}{name}{ANSI_RESET}");
+        } else {
+            println!("  {ANSI_YELLOW}{name}{ANSI_RESET}  {ANSI_DARK_GREY}{url}{ANSI_RESET}");
+        }
+    }
+    println!();
+    println!("Do you want to sync them as well?");
+    println!();
+    println!("{ANSI_GREEN}> 1.{ANSI_RESET} No. Sync only those configured in CG.");
+    println!("  2. Yes. Sync all.");
+    println!();
+
+    let Ok(_raw_mode) = CliSyncRawModeGuard::enter() else {
+        println!("{ANSI_DARK_GREY}Continuing with option 1 (No).{ANSI_RESET}");
+        return Ok(false);
+    };
+
+    let deadline = Instant::now() + Duration::from_secs(EXTRA_REMOTES_PROMPT_SECONDS);
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            println!("\r\x1b[2K{ANSI_DARK_GREY}Continuing with option 1 (No).{ANSI_RESET}");
+            return Ok(false);
+        }
+        print!(
+            "\r\x1b[2K{ANSI_DARK_GREY}Continuing with option 1 in {}s — press 1 or 2, or Enter for the default.{ANSI_RESET}",
+            remaining.as_secs().max(1)
+        );
+        io::stdout().flush()?;
+
+        if !event::poll(Duration::from_millis(200)).context("failed to poll remote sync input")? {
+            continue;
+        }
+        let Event::Key(key) = event::read().context("failed to read remote sync input")? else {
+            continue;
+        };
+        if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+            continue;
+        }
+        match key.code {
+            KeyCode::Char('2') => {
+                println!("\r\x1b[2K");
+                return Ok(true);
+            }
+            KeyCode::Char('1') | KeyCode::Enter | KeyCode::Esc => {
+                println!("\r\x1b[2K");
+                return Ok(false);
+            }
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                println!("\r\x1b[2K");
+                bail!("cancelled by user");
+            }
+            _ => {}
+        }
+    }
+}
+
+struct CliSyncRawModeGuard;
+
+impl CliSyncRawModeGuard {
+    fn enter() -> Result<Self> {
+        enable_raw_mode().context("failed to enable raw mode for remote sync prompt")?;
+        Ok(Self)
+    }
+}
+
+impl Drop for CliSyncRawModeGuard {
+    fn drop(&mut self) {
+        let _ = disable_raw_mode();
+    }
 }
 
 fn scope_display_name_for_repo_root(project: &ProjectConfig, repo_root: &Path) -> Option<String> {
