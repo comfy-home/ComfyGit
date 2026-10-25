@@ -3,7 +3,7 @@
 //
 // Licensed under the ComfyGit License v1.2
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 
 use crate::forge::{ForgeKind, detect_forge_from_remote_url};
 
@@ -152,18 +152,35 @@ pub fn push_mirror_sync(
         bail!("mirror sync requires a checked-out branch, not a detached HEAD");
     }
 
+    // Every remote is attempted even when one fails (e.g. unreachable or a
+    // non-fast-forward rejection): a single failing remote must not starve
+    // the remaining pushes.
     let mut lines = Vec::new();
+    let mut failures = Vec::new();
     for remote in [&gitlab_remote, &github_remote] {
-        let output = run_git_with_cancel(repo_root, &["push", remote, &branch], None)
-            .with_context(|| format!("failed to push branch '{branch}' to remote '{remote}'"))?;
-        if !output.success {
-            let combined = format!("{}{}", output.stdout, output.stderr);
-            bail!(
-                "failed to push branch '{branch}' to remote '{remote}': {}",
-                combined.trim()
-            );
+        match run_git_with_cancel(repo_root, &["push", remote, &branch], None) {
+            Ok(output) if output.success => {
+                lines.push(format!("Pushed '{branch}' to remote '{remote}'."));
+            }
+            Ok(output) => {
+                let combined = format!("{}{}", output.stdout, output.stderr);
+                failures.push(format!("'{remote}': {}", combined.trim()));
+            }
+            Err(error) => {
+                failures.push(format!("'{remote}': {error:#}"));
+            }
         }
-        lines.push(format!("Pushed '{branch}' to remote '{remote}'."));
+    }
+    if !failures.is_empty() {
+        let mut message = format!(
+            "failed to push branch '{branch}' to {} remote(s): {}",
+            failures.len(),
+            failures.join(" | ")
+        );
+        if !lines.is_empty() {
+            message.push_str(&format!(" (succeeded: {})", lines.join(" ")));
+        }
+        bail!("{message}");
     }
     Ok(lines)
 }
@@ -177,11 +194,14 @@ pub fn push_mirror_sync(
 /// part of the ComfyGit configuration (e.g. a local VM mirror that may be
 /// offline) are never fetched, so an unreachable one cannot abort the flow
 /// the way `git fetch --all` does.
+///
+/// Returns the names of the remotes that were fetched (empty when the
+/// default-remote fallback was used).
 pub fn fetch_configured_remotes(
     repo_root: &str,
     configured_remotes: &[String],
     cancel: Option<GitCancellation>,
-) -> Result<()> {
+) -> Result<Vec<String>> {
     let mut fetched: Vec<String> = Vec::new();
     for spec in configured_remotes {
         let spec = spec.trim();
@@ -214,7 +234,7 @@ pub fn fetch_configured_remotes(
     if fetched.is_empty() {
         run_git_checked_with_cancel(repo_root, &["fetch"], cancel)?;
     }
-    Ok(())
+    Ok(fetched)
 }
 
 /// Lists git remotes that are not in `configured_names`, as (name, url) pairs.
@@ -372,8 +392,9 @@ mod tests {
         .expect("add win remote");
 
         // The configured spec may also be the URL rather than the remote name.
-        fetch_configured_remotes(&repo_root, &[remote_url], None)
+        let fetched = fetch_configured_remotes(&repo_root, &[remote_url], None)
             .expect("fetch only the configured remote");
+        assert_eq!(fetched, vec!["gitLAB".to_string()]);
 
         // With no resolvable configured remote, falls back to a plain fetch.
         let fallback_dir = temp_dir("fetch-fallback");
@@ -389,8 +410,9 @@ mod tests {
             &["remote", "add", "win", "/nonexistent/win-remote.git"],
         )
         .expect("add win remote");
-        fetch_configured_remotes(&fallback_root, &[], None)
+        let fetched = fetch_configured_remotes(&fallback_root, &[], None)
             .expect("plain fetch uses only the default remote");
+        assert!(fetched.is_empty());
 
         std::fs::remove_dir_all(&remote_dir).ok();
         std::fs::remove_dir_all(&repo_dir).ok();
