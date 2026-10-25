@@ -10,8 +10,8 @@ use std::{thread, time::Duration};
 use crate::{
     forge::ForgeKind,
     git::{
-        GitCancellation, fetch_configured_remotes, run_git_checked_with_cancel,
-        switch_to_existing_branch_after_merge,
+        GitCancellation, current_branch_with_cancel, fetch_configured_remotes,
+        run_git_checked_with_cancel, run_git_with_cancel, switch_to_existing_branch_after_merge,
     },
 };
 use anyhow::{Context, Result, bail};
@@ -92,13 +92,26 @@ pub(crate) fn finish_after_pull_request_merge(
     // extra remotes that ComfyGit does not manage (e.g. a local VM remote that
     // may be offline) must not abort the post-merge sync when unreachable.
     let configured_remotes = crate::workflow::cli_sync::configured_remote_specs_for_repo(repo_root);
-    fetch_configured_remotes(repo_root, &configured_remotes, cancel.clone())?;
-    sync_current_branch(repo_root, cancel)?;
+    let fetched_remotes = fetch_configured_remotes(repo_root, &configured_remotes, cancel.clone())?;
+    sync_current_branch(repo_root, &fetched_remotes, cancel)?;
     Ok(())
 }
 
-pub(crate) fn sync_current_branch(repo_root: &str, cancel: Option<GitCancellation>) -> Result<()> {
+pub(crate) fn sync_current_branch(
+    repo_root: &str,
+    fetched_remotes: &[String],
+    cancel: Option<GitCancellation>,
+) -> Result<()> {
     let stashed = stash_local_changes_before_sync(repo_root, cancel.clone())?;
+
+    // `git pull --ff-only` only consults the branch's upstream remote. After a
+    // forge merge the merge commit may live on a different configured remote
+    // (e.g. merged on GitLab while the branch tracks GitHub), so the current
+    // branch is first fast-forwarded to each fetched remote-tracking ref.
+    let current_branch = current_branch_with_cancel(repo_root, cancel.clone())?;
+    for remote in fetched_remotes {
+        fast_forward_to_remote_tracking_ref(repo_root, remote, &current_branch, cancel.clone())?;
+    }
 
     match pull_ff_only(repo_root, cancel.clone()) {
         Ok(output) => {
@@ -129,6 +142,35 @@ pub(crate) fn sync_current_branch(repo_root: &str, cancel: Option<GitCancellatio
         }
         Err(error) => Err(error),
     }
+}
+
+/// Fast-forwards the current branch to `<remote>/<branch>` when that
+/// remote-tracking ref exists. No-op when the remote does not carry the
+/// branch; a genuine divergence surfaces as the `--ff-only` merge error.
+fn fast_forward_to_remote_tracking_ref(
+    repo_root: &str,
+    remote: &str,
+    branch: &str,
+    cancel: Option<GitCancellation>,
+) -> Result<()> {
+    let tracking_ref = format!("{remote}/{branch}");
+    let ref_exists = run_git_with_cancel(
+        repo_root,
+        &[
+            "show-ref",
+            "--verify",
+            "--quiet",
+            &format!("refs/remotes/{tracking_ref}"),
+        ],
+        cancel.clone(),
+    )?;
+    if !ref_exists.success {
+        return Ok(());
+    }
+    let output =
+        run_git_checked_with_cancel(repo_root, &["merge", "--ff-only", &tracking_ref], cancel)?;
+    print_pull_output(output);
+    Ok(())
 }
 
 fn pull_ff_only(repo_root: &str, cancel: Option<GitCancellation>) -> Result<String> {
@@ -316,5 +358,92 @@ mod tests {
 
         assert!(message.contains("\x1b[31mCONFLICTING\x1b[0m"));
         assert!(message.contains("\x1b[31mDIRTY\x1b[0m"));
+    }
+
+    fn temp_dir(test_name: &str) -> std::path::PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "comfygit-merge-readiness-tests-{}-{}-{}",
+            test_name,
+            std::process::id(),
+            unique
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    fn init_repo(path: &std::path::Path) {
+        let path = path.display().to_string();
+        run_git_checked_with_cancel(&path, &["init", "-b", "main"], None).expect("init repo");
+        run_git_checked_with_cancel(&path, &["config", "user.name", "ComfyGit Tests"], None)
+            .expect("configure user.name");
+        run_git_checked_with_cancel(
+            &path,
+            &["config", "user.email", "tests@comfygit.invalid"],
+            None,
+        )
+        .expect("configure user.email");
+        run_git_checked_with_cancel(&path, &["commit", "--allow-empty", "-m", "init"], None)
+            .expect("create initial commit");
+    }
+
+    fn head(repo_root: &str) -> String {
+        run_git_checked_with_cancel(repo_root, &["rev-parse", "HEAD"], None)
+            .expect("rev-parse HEAD")
+            .trim()
+            .to_string()
+    }
+
+    #[test]
+    fn fast_forward_to_remote_tracking_ref_advances_to_remote_commit() {
+        // Simulates the post-merge case: the merge commit landed on the
+        // remote while local HEAD is still behind — exactly what
+        // `git pull --ff-only` cannot fix when upstream is another remote.
+        let remote_dir = temp_dir("ff-remote");
+        init_repo(&remote_dir);
+        let remote_root = remote_dir.display().to_string();
+
+        let local_dir = temp_dir("ff-local");
+        init_repo(&local_dir);
+        let local_root = local_dir.display().to_string();
+        run_git_checked_with_cancel(
+            &local_root,
+            &["remote", "add", "gitLAB", &remote_root],
+            None,
+        )
+        .expect("add gitLAB remote");
+
+        // Shared history: local resets to the remote's initial commit.
+        run_git_checked_with_cancel(&local_root, &["fetch", "gitLAB"], None).expect("fetch");
+        run_git_checked_with_cancel(&local_root, &["reset", "--hard", "gitLAB/main"], None)
+            .expect("reset local to remote head");
+
+        // Remote advances (the merge commit); local stays behind.
+        run_git_checked_with_cancel(
+            &remote_root,
+            &["commit", "--allow-empty", "-m", "merge commit"],
+            None,
+        )
+        .expect("create remote commit");
+        run_git_checked_with_cancel(&local_root, &["fetch", "gitLAB"], None).expect("re-fetch");
+        assert_ne!(head(&local_root), head(&remote_root));
+
+        fast_forward_to_remote_tracking_ref(&local_root, "gitLAB", "main", None)
+            .expect("fast-forward to remote-tracking ref");
+        assert_eq!(head(&local_root), head(&remote_root));
+
+        // Re-running is a no-op ("Already up to date").
+        fast_forward_to_remote_tracking_ref(&local_root, "gitLAB", "main", None)
+            .expect("idempotent fast-forward");
+
+        // A remote that does not carry the branch is skipped quietly.
+        fast_forward_to_remote_tracking_ref(&local_root, "gitLAB", "missing-branch", None)
+            .expect("skip missing remote-tracking ref");
+
+        std::fs::remove_dir_all(&remote_dir).ok();
+        std::fs::remove_dir_all(&local_dir).ok();
     }
 }
