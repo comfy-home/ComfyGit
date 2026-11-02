@@ -253,6 +253,12 @@ fn dispatch_args(args: &[String]) -> Result<StartupMode> {
             run_branch_cd_command()?;
             Ok(StartupMode::Handled)
         }
+        [command, action, rest @ ..]
+            if is_branch_command(command) && is_branch_find_action(action) =>
+        {
+            run_branch_find_command(rest)?;
+            Ok(StartupMode::Handled)
+        }
         [command] if is_pr_command(command) => {
             let cwd = env::current_dir().context("failed to read current directory")?;
             let repo_root = current_git_repo_root(&cwd)?;
@@ -813,6 +819,10 @@ fn is_branch_cd_action(value: &str) -> bool {
     matches!(value, "cd")
 }
 
+fn is_branch_find_action(value: &str) -> bool {
+    matches!(value, "find" | "search" | "f" | "s")
+}
+
 fn is_local_merge_action(value: &str) -> bool {
     matches!(value, "local" | "ll" | "loc" | "lcl")
 }
@@ -999,6 +1009,9 @@ fn print_usage() {
         "  cg branch done local       Merge the current branch into a chosen branch locally (no PR)"
     );
     println!("  cg branch cd               Interactively choose and switch to a recent branch");
+    println!("  cg branch find <query>     Search local and remote branch names");
+    println!("                             'a|b' = OR, 'a||b' = AND groups, !'x' = exclude,");
+    println!("                             ll = local only (before query), -e = literal match");
     println!(
         "  cg pr                      Generate a pull request title/body for the current branch"
     );
@@ -1025,6 +1038,7 @@ fn print_usage() {
     println!("            merge: mg | mrg");
     println!("            reroot: rrt");
     println!("            rebase: rebase | force | rbs");
+    println!("            find: find | search | f | s");
     println!(" ");
     println!("  WORKTREE COMMANDS:");
     println!(" ");
@@ -1342,6 +1356,12 @@ fn run_local_merge_command() -> Result<()> {
 fn run_branch_cd_command() -> Result<()> {
     let context = load_active_branch_cli_context()?;
     with_cli_git_cancellation(|cancel| run_branch_cd(&context.repo_root, cancel))
+}
+
+fn run_branch_find_command(args: &[String]) -> Result<()> {
+    let cwd = env::current_dir().context("failed to read current directory")?;
+    let repo_root = current_git_repo_root(&cwd)?;
+    crate::git::run_branch_find(&repo_root, args)
 }
 
 struct ActiveBranchCliContext {
