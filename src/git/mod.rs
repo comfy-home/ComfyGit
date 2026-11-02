@@ -1,6 +1,7 @@
 mod alt;
 mod branch;
 mod branch_end;
+mod branch_find;
 mod locmerge;
 mod merge;
 mod merge_readiness;
@@ -16,6 +17,7 @@ mod worktree_paths;
 pub(crate) use alt::*;
 pub(crate) use branch::*;
 pub(crate) use branch_end::*;
+pub(crate) use branch_find::*;
 pub(crate) use locmerge::*;
 pub(crate) use merge::*;
 pub(crate) use merge_readiness::*;
