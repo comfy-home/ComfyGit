@@ -324,6 +324,13 @@ Enjoy!
 
 ---
 
+> [!NOTE]
+> - **ComfyGit** is not updated as often as we'd like at the moment due to another project that we've been working on for years and it's nearing the finish line.
+> - However, this does **not** mean that **ComfyGit** development has been terminated, there are great things coming...
+> - For now, we aim to push new features at least every 2-3 months.
+
+---
+
 > [!IMPORTANT]
 > <br>
 >
@@ -566,6 +573,7 @@ In the TUI Overview, select your project and press `C` to **Generate Changelog**
 | `cg branch main` / `cg branch ~` | Switch to main/master/custom main |
 | `cg branch done` | Create PR, merge it, switch to target, and sync |
 | `cg branch cd` | Interactively choose and switch to a recent branch |
+| `cg branch find <query>` | Search branch names — `a\|b` = OR, `a\|\|b` = AND, `!'x'` = exclude, `ll` = local only, `-e` = literal |
 | `cg pr` | Generate PR title/body for current branch |
 | `cg pr --main` | Generate PR against main/master |
 | `cg merge` | Interactively merge an open PR |
