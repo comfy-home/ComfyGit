@@ -236,22 +236,29 @@ fn handle_uncommitted_changes(repo_root: &str, cancel: Option<GitCancellation>) 
             Ok(false)
         }
         UncommittedChangesAction::Stash => {
-            // Stash changes with a default message
+            // Stash changes with a default message (include untracked files)
             run_git_checked_with_cancel(
                 repo_root,
-                &["stash", "push", "-m", "Auto-stash before branch merge"],
+                &[
+                    "stash",
+                    "push",
+                    "--include-untracked",
+                    "-m",
+                    "Auto-stash before branch merge",
+                ],
                 cancel,
             )?;
             Ok(false)
         }
         UncommittedChangesAction::StashAndPop => {
             // Stash changes, merge will proceed, and stash will be popped
-            // after a successful merge.
+            // after a successful merge (include untracked files).
             run_git_checked_with_cancel(
                 repo_root,
                 &[
                     "stash",
                     "push",
+                    "--include-untracked",
                     "-m",
                     "Auto-stash before branch merge (will pop)",
                 ],

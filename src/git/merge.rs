@@ -33,10 +33,14 @@ use crossterm::{
 const PR_LIST_LIMIT: usize = 200;
 const FORGE_LINK_LABEL_GITHUB: &str = "<GitHub>";
 const FORGE_LINK_LABEL_GITLAB: &str = "<GitLab>";
-const VSCODE_LINK_LABEL: &str = "<VSCode>";
 const CONFLICT_FIX_PREFIX: &str = "Fix: ";
-const CONFLICT_LINKS_TOTAL_WIDTH: usize =
-    CONFLICT_FIX_PREFIX.len() + FORGE_LINK_LABEL_GITHUB.len() + 1 + VSCODE_LINK_LABEL.len();
+/// Computes the visible width of the conflict links column at runtime,
+/// based on the detected IDE's link label.  This must match the actual
+/// rendered content to avoid column misalignment.
+fn conflict_links_visible_width() -> usize {
+    let ide_label = format!("<{}>", resolve_ide_kind().link_label());
+    CONFLICT_FIX_PREFIX.len() + FORGE_LINK_LABEL_GITHUB.len() + 1 + ide_label.len()
+}
 fn forge_link_label(forge: ForgeKind) -> &'static str {
     match forge {
         ForgeKind::GitHub => FORGE_LINK_LABEL_GITHUB,
@@ -213,7 +217,11 @@ fn prompt_pull_request_selection(
                 Err(error) => {
                     prepared_vscode_workspace = None;
                     if message.is_none() {
-                        message = Some(format!("VS Code link unavailable: {}", error));
+                        message = Some(format!(
+                            "{} link unavailable: {}",
+                            resolve_ide_kind().display_name(),
+                            error
+                        ));
                     }
                 }
             }
@@ -396,12 +404,17 @@ fn prompt_pull_request_selection(
                             Ok(prepared) => {
                                 prepared_vscode_workspace = Some(prepared.clone());
                                 format!(
-                                    "Opened VS Code merge workspace for PR #{} at {}. Resolve conflicts there, save, then return here and press R to commit, push, and refresh.",
+                                    "Opened {} merge workspace for PR #{} at {}. Resolve conflicts there, save, then return here and press R to commit, push, and refresh.",
+                                    resolve_ide_kind().display_name(),
                                     entry.number,
                                     prepared.worktree_root.display()
                                 )
                             }
-                            Err(error) => format!("VS Code merge workspace failed: {}", error),
+                            Err(error) => format!(
+                                "{} merge workspace failed: {}",
+                                resolve_ide_kind().display_name(),
+                                error
+                            ),
                         });
                         needs_render = true;
                     }
@@ -417,8 +430,9 @@ fn prompt_pull_request_selection(
                         let entry = entries[selected].clone();
                         if !entry.is_mergeable() {
                             message = Some(format!(
-                                "PR #{} cannot be merged yet. Press V to open a VS Code merge workspace, or R to reload after resolving it.",
-                                entry.number
+                                "PR #{} cannot be merged yet. Press V to open a {} merge workspace, or R to reload after resolving it.",
+                                entry.number,
+                                resolve_ide_kind().display_name()
                             ));
                             needs_render = true;
                             continue;
@@ -464,7 +478,7 @@ fn render_pull_request_picker(
         Print("Choose a pull request to merge:\r\n"),
         MoveToColumn(0),
         Print(
-            "Use Up/Down or Tab to select. Press Enter to merge, R to reload, V to open the VS Code merge tool for the selected conflicting PR. Esc exits.\r\n",
+            format!("Use Up/Down or Tab to select. Press Enter to merge, R to reload, V to open the {} merge tool for the selected conflicting PR. Esc exits.\r\n", resolve_ide_kind().display_name()),
         ),
         MoveToColumn(0),
         Print(format_table_border(&layout)),
@@ -603,7 +617,7 @@ fn render_pull_request_title_cell(
         return Ok(());
     };
 
-    let label_width = CONFLICT_LINKS_TOTAL_WIDTH;
+    let label_width = conflict_links_visible_width();
     if width <= label_width + 2 {
         queue!(
             stdout,
@@ -631,8 +645,11 @@ fn render_pull_request_title_cell(
         SetForegroundColor(Color::Cyan),
         Print(
             prepared_vscode_workspace
-                .map(|prepared| format_terminal_hyperlink(&prepared.open_uri, VSCODE_LINK_LABEL))
-                .unwrap_or_else(|| VSCODE_LINK_LABEL.to_string())
+                .map(|prepared| {
+                    let label = format!("<{}>", resolve_ide_kind().link_label());
+                    format_terminal_hyperlink(&prepared.open_uri, &label)
+                })
+                .unwrap_or_else(|| { format!("<{}>", resolve_ide_kind().link_label()) })
         ),
         SetForegroundColor(row_color)
     )
@@ -733,6 +750,8 @@ fn merge_pull_request(
 
     let policy = resolve_post_merge_source_branch(repo_root);
     let subject = build_merge_commit_subject(refreshed.number);
+    let label = forge.pull_request_label();
+    println!("Merging {} #{}...", capitalize_first(label), entry.number);
     let stdout = forge.merge_pull_request(
         repo_root,
         refreshed.number,
@@ -743,16 +762,23 @@ fn merge_pull_request(
     )?;
     println!();
     if stdout.is_empty() {
-        let label = forge.pull_request_label();
-        println!("{} #{} merged.", capitalize_first(label), entry.number);
+        println!(
+            "\x1b[32m{} #{} merged.\x1b[0m",
+            capitalize_first(label),
+            entry.number
+        );
     } else {
-        println!("{}", stdout);
+        println!("\x1b[32m{}\x1b[0m", stdout);
     }
+    println!();
 
     // Sync the integration branch before deleting the source locally: `git branch -d`
     // requires the source to be merged into the current target, which is only true after
     // we fast-forward the target from the remote merge.
     finish_after_pull_request_merge(repo_root, &refreshed.target_branch, cancel.clone())?;
+    println!();
+    println!("\x1b[32mSynced.\x1b[0m");
+    println!();
 
     if policy.delete_local_after_merge() {
         switch_off_branch_for_deletion(
@@ -767,11 +793,71 @@ fn merge_pull_request(
     }
     cleanup_merge_workspaces_for_pr(repo_root, refreshed.number)?;
 
+    println!();
+    println!("Checking secondary remote...");
+    println!();
     if let Err(error) = crate::workflow::cli_sync::run_mirror_sync_after_comfygit_merge(repo_root) {
         eprintln!("Warning: mirror sync after merge failed: {error:#}. Run `cg sync` to retry.");
     }
 
     Ok(())
+}
+
+/// Result of a remote-only PR/MR merge (no local checkout/sync).
+#[allow(dead_code)]
+pub(crate) struct RemoteMergeResult {
+    pub target_branch: String,
+    pub source_branch: String,
+    pub delete_remote_on_merge: bool,
+    pub delete_local_after_merge: bool,
+}
+
+/// Merges a PR/MR via the forge API only — does NOT checkout or sync locally.
+/// The caller is responsible for syncing the target branch in the appropriate
+/// worktree afterwards.  Used by `cg wt end` (PR/MR variant) where the local
+/// sync must happen in the main worktree, not the linked worktree.
+pub(crate) fn merge_pull_request_remote_only(
+    repo_root: &str,
+    forge: ForgeKind,
+    pr_number: u64,
+) -> Result<RemoteMergeResult> {
+    let refreshed = fetch_pull_request(repo_root, forge, pr_number)?;
+    ensure_pull_request_mergeable(repo_root, forge, refreshed.number)?;
+
+    let policy = resolve_post_merge_source_branch(repo_root);
+    let subject = build_merge_commit_subject(refreshed.number);
+    let label = forge.pull_request_label();
+    println!(
+        "Merging {} #{}...",
+        capitalize_first(label),
+        refreshed.number
+    );
+    let stdout = forge.merge_pull_request(
+        repo_root,
+        refreshed.number,
+        &subject,
+        &refreshed.source_branch,
+        policy.delete_remote_on_merge(),
+        policy.delete_local_after_merge(),
+    )?;
+    println!();
+    if stdout.is_empty() {
+        println!(
+            "\x1b[32m{} #{} merged.\x1b[0m",
+            capitalize_first(label),
+            refreshed.number
+        );
+    } else {
+        println!("\x1b[32m{}\x1b[0m", stdout);
+    }
+    println!();
+
+    Ok(RemoteMergeResult {
+        target_branch: refreshed.target_branch,
+        source_branch: refreshed.source_branch,
+        delete_remote_on_merge: policy.delete_remote_on_merge(),
+        delete_local_after_merge: policy.delete_local_after_merge(),
+    })
 }
 
 fn switch_off_branch_for_deletion(
@@ -892,6 +978,11 @@ fn prepare_vscode_merge_workspace(
         cancel.clone(),
     )?;
 
+    eprintln!(
+        "[merge] preparing conflict workspace: git merge --no-commit --no-ff {} in {}",
+        target_ref,
+        worktree_root.display()
+    );
     let merge_output = Command::new("git")
         .current_dir(&worktree_root)
         .args(["merge", "--no-commit", "--no-ff", &target_ref])
@@ -952,13 +1043,17 @@ fn build_vscode_merge_workspace_root(pr_number: u64) -> PathBuf {
 }
 
 fn launch_prepared_vscode_merge_workspace(prepared: &PreparedVscodeMergeWorkspace) -> Result<()> {
+    let ide = resolve_ide_kind();
     let vscode_executable = resolve_vscode_executable()?;
     let mut command = Command::new(vscode_executable);
     if launch_vscode_uri(&prepared.open_uri).is_ok() {
         return Ok(());
     }
 
-    if is_running_inside_vscode_terminal() {
+    // JetBrains uses different CLI flags.
+    if ide == IdeKind::JetBrains {
+        command.arg("diff").arg(&prepared.first_conflicted_file);
+    } else if is_running_inside_vscode_terminal() {
         command
             .arg("--reuse-window")
             .arg(&prepared.first_conflicted_file);
@@ -973,7 +1068,7 @@ fn launch_prepared_vscode_merge_workspace(prepared: &PreparedVscodeMergeWorkspac
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .context("failed to launch VS Code")?;
+        .with_context(|| format!("failed to launch {}", ide.display_name()))?;
     Ok(())
 }
 
@@ -985,8 +1080,9 @@ fn finalize_prepared_vscode_merge_workspace(
     let conflicted_files = list_unmerged_files(&worktree_root, cancel.clone())?;
     if !conflicted_files.is_empty() {
         return Ok(PreparedWorkspaceReloadOutcome::ConflictsRemaining(format!(
-            "Conflicts still remain in {}. Resolve them in VS Code, save, then press R again.",
-            prepared.worktree_root.display()
+            "Conflicts still remain in {}. Resolve them in {}, save, then press R again.",
+            prepared.worktree_root.display(),
+            resolve_ide_kind().display_name()
         )));
     }
 
@@ -1043,18 +1139,55 @@ fn ensure_selected_vscode_workspace(
 }
 
 fn launch_vscode_uri(uri: &str) -> Result<()> {
-    let escaped_uri = uri.replace('\'', "''");
-    Command::new("powershell")
-        .args([
-            "-NoProfile",
-            "-Command",
-            &format!("Start-Process '{}'", escaped_uri),
-        ])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .context("failed to launch VS Code URI")?;
-    Ok(())
+    // Windows: use PowerShell Start-Process.
+    #[cfg(target_os = "windows")]
+    {
+        let escaped_uri = uri.replace('\'', "''");
+        if Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-Command",
+                &format!("Start-Process '{}'", escaped_uri),
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .is_ok()
+        {
+            return Ok(());
+        }
+    }
+
+    // macOS: use `open`.
+    #[cfg(target_os = "macos")]
+    {
+        if Command::new("open")
+            .arg(uri)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .is_ok()
+        {
+            return Ok(());
+        }
+    }
+
+    // Linux: use `xdg-open`.
+    #[cfg(target_os = "linux")]
+    {
+        if Command::new("xdg-open")
+            .arg(uri)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .is_ok()
+        {
+            return Ok(());
+        }
+    }
+
+    // Fallback: let the caller handle it via the CLI.
+    Err(anyhow!("no URI launcher available"))
 }
 
 fn dismiss_prepared_vscode_workspace(prepared: Option<PreparedVscodeMergeWorkspace>) {
@@ -1125,7 +1258,7 @@ fn cleanup_prepared_vscode_merge_workspace(prepared: &PreparedVscodeMergeWorkspa
     Ok(())
 }
 
-fn merge_in_progress(repo_root: &std::path::Path) -> Result<bool> {
+pub(crate) fn merge_in_progress(repo_root: &std::path::Path) -> Result<bool> {
     let status = Command::new("git")
         .current_dir(repo_root)
         .args(["rev-parse", "-q", "--verify", "MERGE_HEAD"])
@@ -1139,40 +1272,195 @@ fn merge_in_progress(repo_root: &std::path::Path) -> Result<bool> {
 fn is_running_inside_vscode_terminal() -> bool {
     env::var("TERM_PROGRAM").is_ok_and(|value| value.eq_ignore_ascii_case("vscode"))
         || env::var_os("VSCODE_GIT_IPC_HANDLE").is_some()
+        || detect_ide_kind().is_some()
+}
+
+/// Detected IDE kind based on environment variables.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IdeKind {
+    VsCode,
+    Devin,
+    Cursor,
+    JetBrains,
+}
+
+impl IdeKind {
+    /// The URI scheme used to open files in this IDE (e.g. `vscode`, `devin`).
+    fn uri_scheme(self) -> &'static str {
+        match self {
+            IdeKind::VsCode => "vscode",
+            IdeKind::Devin => "devin",
+            IdeKind::Cursor => "cursor",
+            // JetBrains uses a different URI format: jetbrains://idea/navigate/...
+            IdeKind::JetBrains => "jetbrains",
+        }
+    }
+
+    /// The CLI command name used to launch this IDE from the terminal.
+    fn cli_command(self) -> &'static str {
+        match self {
+            IdeKind::VsCode => "code",
+            IdeKind::Devin => "devin-desktop",
+            IdeKind::Cursor => "cursor",
+            IdeKind::JetBrains => "idea",
+        }
+    }
+
+    /// The display name shown to the user.
+    fn display_name(self) -> &'static str {
+        match self {
+            IdeKind::VsCode => "VS Code",
+            IdeKind::Devin => "Devin",
+            IdeKind::Cursor => "Cursor",
+            IdeKind::JetBrains => "JetBrains IDE",
+        }
+    }
+
+    /// The short label used inside `<...>` for terminal hyperlinks.
+    /// Must NOT contain spaces — some terminals split OSC 8 hyperlinks
+    /// at whitespace, breaking the link into separate clickable regions.
+    fn link_label(self) -> &'static str {
+        match self {
+            IdeKind::VsCode => "VSCode",
+            IdeKind::Devin => "Devin",
+            IdeKind::Cursor => "Cursor",
+            IdeKind::JetBrains => "JetBrains",
+        }
+    }
+}
+
+/// Detects which IDE the terminal is running inside, if any.
+///
+/// VSCode forks (Devin/Windsurf, Cursor) set `VSCODE_*` env vars but tmux
+/// strips most of them and overwrites `TERM_PROGRAM=tmux`.  The most
+/// reliable indicators that survive through tmux are:
+///   - `CHROME_DESKTOP` (e.g. `devin-desktop.desktop`, `cursor.desktop`)
+///   - `VSCODE_GIT_ASKPASS_MAIN` (path contains `devin-desktop` / `cursor`)
+///   - `VSCODE_GIT_IPC_HANDLE` (present for any VSCode fork, but not for JetBrains)
+fn detect_ide_kind() -> Option<IdeKind> {
+    // Gather all available env var hints.
+    let chrome_desktop = env::var("CHROME_DESKTOP").unwrap_or_default();
+    let askpass_main = env::var("VSCODE_GIT_ASKPASS_MAIN").unwrap_or_default();
+    let code_cache_path = env::var("VSCODE_CODE_CACHE_PATH").unwrap_or_default();
+    let combined = format!("{chrome_desktop} {askpass_main} {code_cache_path}");
+
+    // Devin (formerly Windsurf)
+    if combined.contains("Devin") || combined.contains("devin-desktop") {
+        return Some(IdeKind::Devin);
+    }
+    if combined.contains("Windsurf") || combined.contains("windsurf") {
+        return Some(IdeKind::Devin);
+    }
+
+    // Cursor
+    if combined.contains("Cursor") || combined.contains("cursor") {
+        // Avoid false positive: "cursor" is a common word, so only match
+        // if it appears in the CHROME_DESKTOP or askpass path context.
+        if chrome_desktop.contains("cursor") || askpass_main.contains("cursor") {
+            return Some(IdeKind::Cursor);
+        }
+    }
+
+    // Standard VS Code — check TERM_PROGRAM (not tmux) or VSCODE_GIT_IPC_HANDLE.
+    let term_program = env::var("TERM_PROGRAM").unwrap_or_default();
+    if term_program.eq_ignore_ascii_case("vscode") {
+        return Some(IdeKind::VsCode);
+    }
+    // VSCODE_GIT_IPC_HANDLE is set by any VSCode fork (including Devin/Cursor),
+    // but at this point we've already ruled out Devin and Cursor, so if it's
+    // present it must be plain VS Code.
+    if env::var_os("VSCODE_GIT_IPC_HANDLE").is_some() {
+        return Some(IdeKind::VsCode);
+    }
+
+    // JetBrains IDEs (IntelliJ, WebStorm, PyCharm, etc.) set TERMINAL_EMULATOR.
+    if env::var("TERMINAL_EMULATOR")
+        .map(|v| v.contains("JetBrains"))
+        .unwrap_or(false)
+    {
+        return Some(IdeKind::JetBrains);
+    }
+
+    None
+}
+
+/// Returns the detected IDE, falling back to VS Code if none is detected
+/// (VS Code is the most common and its `code` CLI is widely available).
+fn resolve_ide_kind() -> IdeKind {
+    detect_ide_kind().unwrap_or(IdeKind::VsCode)
 }
 
 fn resolve_vscode_executable() -> Result<PathBuf> {
-    let code_command = PathBuf::from("code");
-    if Command::new(&code_command)
+    let ide = resolve_ide_kind();
+    let cli = ide.cli_command();
+
+    // Try the CLI command first (works on all platforms).
+    let cli_path = PathBuf::from(cli);
+    if Command::new(&cli_path)
         .arg("--version")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
         .is_ok()
     {
-        return Ok(code_command);
+        return Ok(cli_path);
     }
 
-    let local_app_data = env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .ok_or_else(|| anyhow!("could not locate LOCALAPPDATA to find Code.exe"))?;
-    let fallback = local_app_data
-        .join("Programs")
-        .join("Microsoft VS Code")
-        .join("Code.exe");
-    if fallback.is_file() {
-        Ok(fallback)
-    } else {
-        bail!("could not find the VS Code CLI or Code.exe")
+    // Windows fallback: look for the .exe in LOCALAPPDATA.
+    if let Some(local_app_data) = env::var_os("LOCALAPPDATA").map(PathBuf::from) {
+        let exe_name = match ide {
+            IdeKind::Devin => "Devin.exe",
+            IdeKind::Cursor => "Cursor.exe",
+            _ => "Code.exe",
+        };
+        let program_dir = match ide {
+            IdeKind::Devin => "Devin",
+            IdeKind::Cursor => "Cursor",
+            _ => "Microsoft VS Code",
+        };
+        let fallback = local_app_data
+            .join("Programs")
+            .join(program_dir)
+            .join(exe_name);
+        if fallback.is_file() {
+            return Ok(fallback);
+        }
     }
+
+    // macOS fallback: look in /Applications.
+    let app_name = match ide {
+        IdeKind::Devin => "Devin.app",
+        IdeKind::Cursor => "Cursor.app",
+        _ => "Visual Studio Code.app",
+    };
+    let macos_fallback = PathBuf::from("/Applications")
+        .join(app_name)
+        .join("Contents")
+        .join("Resources")
+        .join("app")
+        .join("bin")
+        .join(cli);
+    if macos_fallback.is_file() {
+        return Ok(macos_fallback);
+    }
+
+    bail!("could not find the {} CLI ({})", ide.display_name(), cli)
 }
 
 fn build_vscode_file_uri(path: &std::path::Path, open_in_new_window: bool) -> String {
+    let ide = resolve_ide_kind();
+    let scheme = ide.uri_scheme();
     let encoded_path = encode_vscode_path(path);
+
+    // JetBrains uses a different URI format: jetbrains://idea/navigate/reference?path=...
+    if ide == IdeKind::JetBrains {
+        return format!("{}://idea/navigate/reference?path={}", scheme, encoded_path);
+    }
+
     if open_in_new_window {
-        format!("vscode://file/{}?windowId=_blank", encoded_path)
+        format!("{}://file/{}?windowId=_blank", scheme, encoded_path)
     } else {
-        format!("vscode://file/{}", encoded_path)
+        format!("{}://file/{}", scheme, encoded_path)
     }
 }
 
@@ -1190,7 +1478,10 @@ fn encode_vscode_path(path: &std::path::Path) -> String {
     encoded
 }
 
-fn list_unmerged_files(repo_root: &str, cancel: Option<GitCancellation>) -> Result<Vec<String>> {
+pub(crate) fn list_unmerged_files(
+    repo_root: &str,
+    cancel: Option<GitCancellation>,
+) -> Result<Vec<String>> {
     let output = run_git_checked_owned_with_cancel(
         repo_root,
         vec![
@@ -1238,7 +1529,21 @@ fn pad_cell(value: &str, width: usize) -> String {
 }
 
 fn format_terminal_hyperlink(url: &str, label: &str) -> String {
+    // tmux doesn't support OSC 8 hyperlinks — clicking shows "No matching results".
+    // Fall back to plain text when inside tmux; the user can press V to launch the IDE.
+    if is_running_inside_tmux() {
+        return label.to_string();
+    }
     format!("\x1b]8;;{}\x1b\\{}\x1b]8;;\x1b\\", url, label)
+}
+
+/// Returns true if the terminal is running inside tmux.
+/// tmux strips most VSCODE_* env vars and doesn't support OSC 8 hyperlinks.
+fn is_running_inside_tmux() -> bool {
+    env::var_os("TMUX").is_some()
+        || env::var("TERM_PROGRAM")
+            .map(|v| v == "tmux")
+            .unwrap_or(false)
 }
 
 fn clear_pull_request_picker(rendered_lines: &mut usize) -> Result<()> {
@@ -1582,7 +1887,7 @@ mod tests {
         };
 
         let title_width = 40usize;
-        let label_width = CONFLICT_LINKS_TOTAL_WIDTH;
+        let label_width = conflict_links_visible_width();
         let title_visible = fit_cell(&entry.title, title_width - label_width - 2);
         let rendered_width = pad_cell(&title_visible, title_width - label_width - 2)
             .chars()
@@ -1613,9 +1918,166 @@ mod tests {
         let uri =
             build_vscode_file_uri(std::path::Path::new("C:/tmp/merge space/Cargo.toml"), true);
 
-        assert_eq!(
-            uri,
-            "vscode://file/C:/tmp/merge%20space/Cargo.toml?windowId=_blank"
+        // The URI scheme depends on the detected IDE.  We only assert the
+        // path encoding and the windowId query parameter here.
+        assert!(
+            uri.ends_with("://file/C:/tmp/merge%20space/Cargo.toml?windowId=_blank"),
+            "unexpected URI: {uri}"
         );
+    }
+
+    #[test]
+    fn detect_ide_kind_detects_all_ides() {
+        // Run all detection cases in a single test to avoid env var races
+        // between parallel tests.
+
+        // Devin via CHROME_DESKTOP (survives tmux)
+        unsafe {
+            env::set_var("CHROME_DESKTOP", "devin-desktop.desktop");
+            env::set_var(
+                "VSCODE_GIT_ASKPASS_MAIN",
+                "/usr/share/devin-desktop/resources/app/extensions/git/dist/askpass-main.js",
+            );
+            env::remove_var("VSCODE_CODE_CACHE_PATH");
+            env::remove_var("TERM_PROGRAM");
+            env::remove_var("VSCODE_GIT_IPC_HANDLE");
+            env::remove_var("TERMINAL_EMULATOR");
+        }
+        assert_eq!(
+            detect_ide_kind(),
+            Some(IdeKind::Devin),
+            "Devin not detected via CHROME_DESKTOP"
+        );
+
+        // Devin via VSCODE_CODE_CACHE_PATH (when not behind tmux)
+        unsafe {
+            env::remove_var("CHROME_DESKTOP");
+            env::remove_var("VSCODE_GIT_ASKPASS_MAIN");
+            env::set_var(
+                "VSCODE_CODE_CACHE_PATH",
+                "/home/user/.config/Devin/CachedData/abc",
+            );
+        }
+        assert_eq!(
+            detect_ide_kind(),
+            Some(IdeKind::Devin),
+            "Devin not detected via VSCODE_CODE_CACHE_PATH"
+        );
+
+        // Windsurf (also maps to Devin)
+        unsafe {
+            env::set_var(
+                "VSCODE_CODE_CACHE_PATH",
+                "/home/user/.config/Windsurf/CachedData/abc",
+            );
+        }
+        assert_eq!(
+            detect_ide_kind(),
+            Some(IdeKind::Devin),
+            "Windsurf not detected as Devin"
+        );
+
+        // Cursor via CHROME_DESKTOP (survives tmux)
+        unsafe {
+            env::set_var("CHROME_DESKTOP", "cursor.desktop");
+            env::set_var(
+                "VSCODE_GIT_ASKPASS_MAIN",
+                "/usr/share/cursor/resources/app/extensions/git/dist/askpass-main.js",
+            );
+            env::remove_var("VSCODE_CODE_CACHE_PATH");
+        }
+        assert_eq!(
+            detect_ide_kind(),
+            Some(IdeKind::Cursor),
+            "Cursor not detected via CHROME_DESKTOP"
+        );
+
+        // VS Code via TERM_PROGRAM (not behind tmux)
+        unsafe {
+            env::remove_var("CHROME_DESKTOP");
+            env::remove_var("VSCODE_GIT_ASKPASS_MAIN");
+            env::remove_var("VSCODE_CODE_CACHE_PATH");
+            env::set_var("TERM_PROGRAM", "vscode");
+        }
+        assert_eq!(
+            detect_ide_kind(),
+            Some(IdeKind::VsCode),
+            "VS Code not detected via TERM_PROGRAM"
+        );
+
+        // VS Code via VSCODE_GIT_IPC_HANDLE (behind tmux, no CHROME_DESKTOP)
+        unsafe {
+            env::remove_var("TERM_PROGRAM");
+            env::set_var(
+                "VSCODE_GIT_IPC_HANDLE",
+                "/run/user/1000/vscode-git-abc.sock",
+            );
+        }
+        assert_eq!(
+            detect_ide_kind(),
+            Some(IdeKind::VsCode),
+            "VS Code not detected via VSCODE_GIT_IPC_HANDLE"
+        );
+
+        // JetBrains via TERMINAL_EMULATOR
+        unsafe {
+            env::remove_var("VSCODE_GIT_IPC_HANDLE");
+            env::set_var("TERMINAL_EMULATOR", "JetBrains-JediTerm");
+        }
+        assert_eq!(
+            detect_ide_kind(),
+            Some(IdeKind::JetBrains),
+            "JetBrains not detected"
+        );
+
+        // Cleanup
+        unsafe {
+            env::remove_var("CHROME_DESKTOP");
+            env::remove_var("VSCODE_GIT_ASKPASS_MAIN");
+            env::remove_var("VSCODE_CODE_CACHE_PATH");
+            env::remove_var("TERM_PROGRAM");
+            env::remove_var("VSCODE_GIT_IPC_HANDLE");
+            env::remove_var("TERMINAL_EMULATOR");
+        }
+    }
+
+    #[test]
+    fn ide_kind_link_labels_have_no_spaces() {
+        // OSC 8 hyperlinks can break at spaces in some terminals (e.g. Devin).
+        // Ensure all link labels are space-free.
+        for &ide in &[
+            IdeKind::VsCode,
+            IdeKind::Devin,
+            IdeKind::Cursor,
+            IdeKind::JetBrains,
+        ] {
+            assert!(
+                !ide.link_label().contains(' '),
+                "link label {:?} for {:?} contains a space",
+                ide.link_label(),
+                ide
+            );
+        }
+    }
+
+    #[test]
+    fn build_vscode_file_uri_uses_correct_scheme_for_devin() {
+        unsafe {
+            env::set_var("CHROME_DESKTOP", "devin-desktop.desktop");
+            env::remove_var("VSCODE_CODE_CACHE_PATH");
+            env::remove_var("TERM_PROGRAM");
+            env::remove_var("VSCODE_GIT_IPC_HANDLE");
+            env::remove_var("TERMINAL_EMULATOR");
+        }
+
+        let uri = build_vscode_file_uri(std::path::Path::new("/tmp/test.rs"), false);
+        assert!(
+            uri.starts_with("devin://file/"),
+            "expected devin:// scheme, got: {uri}"
+        );
+
+        unsafe {
+            env::remove_var("CHROME_DESKTOP");
+        }
     }
 }

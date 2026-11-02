@@ -51,5 +51,11 @@ cg() {
     return 0
   fi
 
+  if [ "$#" -ge 2 ] && [ "$1" = "wt" ] && [ "$2" = "cd" ]; then
+    target_dir="$("$comfygit_exe" wt cd-pwd)" || return $?
+    cd "$target_dir" || return $?
+    return 0
+  fi
+
   "$comfygit_exe" "$@"
 }

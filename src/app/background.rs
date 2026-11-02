@@ -730,7 +730,7 @@ impl ScopeDraft {
 
         let format = if require_probe {
             match &self.last_probe {
-                Some(probe) if matches!(probe.kind, ProbeKind::Success) => {
+                Some(probe) if matches!(probe.kind, ProbeKind::Success | ProbeKind::Warning) => {
                     probe.format.unwrap_or(self.format)
                 }
                 Some(_) | None => bail!("scope '{}' must be read successfully before saving", name),

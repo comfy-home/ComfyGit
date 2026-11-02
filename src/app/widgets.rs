@@ -293,10 +293,13 @@ pub(crate) fn absolutize_path_for_repo_root(path: &str, repo_root: &str) -> Stri
         return normalized_path_string(trimmed);
     }
 
-    std::path::Path::new(root)
-        .join(trimmed.trim_start_matches('/'))
-        .display()
-        .to_string()
+    // Join component-wise so repo-relative paths stored with `/` separators
+    // produce a consistently-separated absolute path on every platform.
+    let mut resolved = PathBuf::from(root);
+    for component in Path::new(trimmed.trim_start_matches('/')).components() {
+        resolved.push(component.as_os_str());
+    }
+    resolved.display().to_string()
 }
 
 /// Keep non-root paths relative to repo root for storage/display.

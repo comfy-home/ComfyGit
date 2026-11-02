@@ -40,9 +40,33 @@ pub fn ensure_authenticated() -> Result<()> {
 }
 
 pub fn run_in_repo(repo_root: &str, args: &[&str]) -> Result<Output> {
+    // Resolve the repo slug from the default push remote and inject
+    // `--repo <slug>` so that `gh` always targets the correct repository.
+    // Without this, `gh` may pick the wrong remote when a repo has multiple
+    // remotes (e.g. a fork + an upstream), causing PR creation to fail with
+    // "No commits between ..." or "Head sha can't be blank".
+    let slug = resolve_repo_slug(repo_root);
+    let mut full_args: Vec<String> = Vec::with_capacity(args.len() + 2);
+    if let Some(slug) = &slug {
+        full_args.push("--repo".to_string());
+        full_args.push(slug.clone());
+    }
+    full_args.extend(args.iter().map(|a| a.to_string()));
+
     Command::new(CLI_NAME)
         .current_dir(repo_root)
-        .args(args)
+        .args(&full_args)
         .output()
-        .with_context(|| format!("failed to execute {CLI_NAME} {}", args.join(" ")))
+        .with_context(|| format!("failed to execute {CLI_NAME} {}", full_args.join(" ")))
+}
+
+/// Resolves the `owner/repo` slug for the default push remote of the repo.
+/// Returns `None` if the slug can't be resolved (e.g. no GitHub remote),
+/// in which case `gh` will fall back to its own auto-detection.
+fn resolve_repo_slug(repo_root: &str) -> Option<String> {
+    let remote_name = crate::git::default_push_remote_name(repo_root).ok()?;
+    let remote_url =
+        crate::git::run_git_checked(repo_root, &["remote", "get-url", &remote_name]).ok()?;
+    let (owner, repo) = crate::ghub::remote::owner_repo_from_remote_url(remote_url.trim())?;
+    Some(format!("{owner}/{repo}"))
 }

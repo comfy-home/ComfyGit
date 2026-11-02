@@ -92,6 +92,22 @@ pub(crate) fn run_pr_and_capture(
         );
     }
 
+    // Check for commits between target and current branch before doing anything else.
+    // This avoids a confusing GitHub API error ("No commits between ...") later.
+    let range_spec = format!("{}..{}", target_branch, current_branch);
+    let log_output = run_git_checked_with_cancel(
+        repo_root,
+        &["log", "--pretty=format:%h", &range_spec],
+        cancel.clone(),
+    )?;
+    if log_output.trim().is_empty() {
+        bail!(
+            "no commits found between '{}' and '{}'; make sure your branch has commits ahead of the target before opening a pull request",
+            target_branch,
+            current_branch
+        );
+    }
+
     ensure_clean_worktree_with_cancel(repo_root, "cg pr", cancel.clone())?;
     let current_upstream_ref = ensure_local_branch_published_and_in_sync_with_cancel(
         repo_root,
@@ -199,6 +215,7 @@ pub(crate) fn run_pr_and_capture(
     } else {
         println!("{create_output}");
     }
+    println!();
     resolve_created_pull_request(
         forge,
         repo_root,
@@ -1399,7 +1416,7 @@ fn normalize_lookup(value: &str) -> String {
     value.trim().to_ascii_lowercase()
 }
 
-fn prompt_target_branch_change(
+pub(crate) fn prompt_target_branch_change(
     repo_root: &str,
     current_branch: &str,
     current_target: &str,
@@ -1509,11 +1526,12 @@ fn load_target_branches(
     let lines: Vec<&str> = output.lines().collect();
 
     for line in lines.iter().skip(start_line - 1).take(5) {
-        // Remove the "* " or "  " prefix and clean up the branch name
-        let branch_name = line
-            .trim_start_matches("* ")
-            .trim_start_matches("  ")
-            .trim();
+        // `git branch` prefixes each line with a 2-char status column:
+        //   "* " — current branch
+        //   "  " — normal branch
+        //   "+ " — branch checked out in another worktree
+        // Strip the prefix and any remaining whitespace.
+        let branch_name = line.trim_start_matches(['*', '+', ' ']).trim();
         if !branch_name.is_empty() && branch_name != current_branch {
             branches.push(branch_name.to_string());
         }

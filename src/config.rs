@@ -994,6 +994,24 @@ impl IntegrationMode {
             _ => None,
         }
     }
+
+    /// Human-readable label for the primary remote URL prompt.
+    pub fn primary_remote_label(self) -> &'static str {
+        match self.forge_kind() {
+            Some(crate::forge::ForgeKind::GitHub) => "GitHub remote URL",
+            Some(crate::forge::ForgeKind::GitLab) => "GitLab remote URL",
+            None => "Remote URL",
+        }
+    }
+
+    /// Human-readable label for the secondary remote URL prompt.
+    pub fn secondary_remote_label(self) -> &'static str {
+        match self.secondary_forge_kind() {
+            Some(crate::forge::ForgeKind::GitHub) => "GitHub remote URL",
+            Some(crate::forge::ForgeKind::GitLab) => "GitLab remote URL",
+            None => "Secondary remote URL",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1185,6 +1203,8 @@ pub struct RepoConfig {
     pub post_merge_source_branch: PostMergeSourceBranch,
     #[serde(default)]
     pub mirror_sync_after_merge: MirrorSyncAfterMerge,
+    #[serde(default)]
+    pub worktree_root: Option<String>,
 }
 
 /// When GitLab+GitHub mirror sync runs after ComfyGit merges an MR/PR.

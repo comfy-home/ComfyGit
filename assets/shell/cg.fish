@@ -58,6 +58,16 @@ function cg --description 'ComfyGit launcher (supports cg cd <alias> [sub])'
         end
         cd -- $target_dir
         or return
+    else if set -q argv[1]; and test "$argv[1]" = wt; and set -q argv[2]; and test "$argv[2]" = cd
+        set -l target_dir ("$_exe" wt cd-pwd)
+        or return
+        set target_dir (string trim -- $target_dir)
+        if test -z "$target_dir"
+            echo "ComfyGit wt cd-pwd returned an empty path." >&2
+            return 1
+        end
+        cd -- $target_dir
+        or return
     else
         command "$_exe" $argv
     end
