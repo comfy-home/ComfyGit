@@ -58,12 +58,64 @@ Enjoy!
 
 ---
 
-<details><summary>👀 What's new in v0.37.13 ...</summary>
+<details><summary>👀 What's new in v0.39.1 ...</summary>
 
 ### 💥 💥 💥 This Release's Top Picks ...  💥 💥 💥
 
-<sup>💬 Intro:</sup>  
-<sup>_Following few releases will not be possible to build from source. This is because we are developing several components (3), that are not ready for public release yet, but they are already partially implemented in ComfyGit for development purposes. To use this release you need to use an installer (deb, rpm, msi, etc). We'll announce once this limitation ends. There is quite a few addition in this release:_</sup>  
+#### **1. &nbsp;&nbsp;&nbsp;[0.39.0 - 0.39.7]: Finally, WORKTREE support!**
+- ComfyGit now can create worktrees, merge to main worktree, manage worktrees etc
+- Make sure to check `cg wt --help` to see all available commands
+- Two merging options:
+  - You can use `cg wt end ll`/`cg wt end local` to merge your worktree locally, and then push your changes to remote, or...
+  - You can use a plain `cg wt end`/`cg wt mg` to merge your changes via PR/MR request
+- EXPERIMENTAL feature in testing:
+  - CG can automatically adjust relative paths!
+  - Since the best practice is having WT one level higher that projects root, you usually need to adjust any relative path declerations (e.g. in Cargo.toml), CG should be able to do this for you.
+  - Of course when you use `cg wt end` to marge your branched WT back to main WT, CG returns relative paths as they should be!
+- IN TESTING!
+
+#### **2. &nbsp;&nbsp;&nbsp;[0.39.1]: ComfyGit now supports **finding branches** by name with query syntax**
+- Yesterday you needed this: `git branch -a | grep -i -E '(want-find-this|(^|[/_-])also-this([/_-]|$))'`, today you can use `cg br find "want-find-this|also-this"`
+- Use `cg br find <query>` to search for branches
+- Query syntax supports OR/AND/exclusion/exact matching
+- Examples:
+  - `cg br find "feature|bug"`
+  - `cg br find "feature|bug||huge|big"` = finds each branch containing "feature" OR "bug" AND "huge" OR "big"
+  - `cg br find "feature|bug||huge|big" !"enhancement"` = same as above but excludes branches containing "enhancement"
+  - `cg br find "feaTure" -e` = finds exact branch name "feaTure"
+
+#### **3. &nbsp;&nbsp;&nbsp;[0.38.8]: Multi-IDE support in `cg mg`/`cg merge`**
+- ComfyGit now supports merge conflict resolver opening in: VSCode(old), JetBrains, Cursor, and Devin
+
+#### **4. &nbsp;&nbsp;&nbsp;[0.38.9 and 0.38.10]: Recognition of custom version marking**
+- CG no longer errors out with versions like:
+  - 1.2.3-alpha.4
+  - 1.2.3-alpha.4:custom
+  - 1.2.3-alpha.4--custom
+- NOTE: Some languages don't allow use of `:custom` (e.g. Rust), but `--custom` is usually fine
+- NOTE 2: This version brings only recognition and ititial logic, not deep implementation
+  - example of logic: if you do a minor bump from path with alpha flag, this flag is removed automatically.
+  - deep implementation will follow (no timeline yet)
+
+#### **5. &nbsp;&nbsp;&nbsp;[0.38.11]: Fix for incorrect Remote resolution**
+- it happened especially during `cg br end` in cloned/forked project
+- solved
+
+#### **6. &nbsp;&nbsp;&nbsp;[0.38.12]: GitLab merging improvements**
+- needed for reliability as some `glab` commands were not reliable as they should
+
+#### **7. &nbsp;&nbsp;&nbsp;[0.38.15]: Support Sync for non-CG configured remotes**
+- Previously errored out when remote was unreachable (e.g. turned off VM), now flow finishes.
+- Not only that, it also offers the sync when unconfigured remote is reachable (defaults to skip; with 10s timeout)
+
+
+<sub>...  🎉 Enjoy!</sub>
+
+<br><br>
+
+<details><summary>👀 See previous changes...</summary>
+<br>
+<details><summary>v0-37-13 ...</summary>
 
 #### **1. &nbsp;&nbsp;&nbsp;Brand new bespoke-made text engine `ratatui-comfy-text-engine`**
 - Completely changes experience within TUI, especially where markdown is rendered
@@ -119,10 +171,8 @@ Enjoy!
 
 <sub>...  🎉 Enjoy!</sub>
 
-<br><br>
-
-<details><summary>👀 See previous changes...</summary>
 <br>
+</details>
 <details><summary>v0-35-20 ...</summary>
 
 #### **1. &nbsp;&nbsp;&nbsp;v0.35.3: ComfyGitFlow declaration**
@@ -208,41 +258,16 @@ Enjoy!
 
 <br>
 </details>
-<details><summary>v0-29-5 ...</summary>
-
-#### **1. &nbsp;&nbsp;&nbsp;Advanced Alias Functionality!**
-- Must be enabled in `Project Settings/General`
-- Allows `cg cd` command to `cd` into more than just a project root
-- For instance, for broject with alias `cg` you can define:
-    - `dist` folder path as `{PROJECT_ROOT}/dist/latest/linux/amd64` ==> then you can perform `cg cd cg dist` from anywhere to get in instantly!
-- Has pre-defined two sub-aliases: `dist` and `ui`
-- Allows creation of custom sub-aliases!
-
-#### **2. &nbsp;&nbsp;&nbsp;Changelog-related settings were moved**
-- They are now in a dedicated "Changelogs" tab within `Project Settings`
-
-#### **3. &nbsp;&nbsp;&nbsp;Project TILE visual change**
-- The first info line ("commits ahead since release") got its icon removed
-- Now the label displays as "Tag ==>> HEAD:"
-- Reasoning:
-    - Some terminals as `kitty` and `konsole` were having trouble rendering the tag (🏷)️ icon
-    - Only terminals with a full GPU engine were reliable
-    - The easiest and most reliable fix was to simplify the line
-
-
-<sub>...  🎉 Enjoy!</sub>
-
-<br>
-</details>
 </details>
 <br>
 
 ---
-<sup>... ✨ auto-injected by [ComfyGit](https://github.com/comfy-home/ComfyGit)       |       For detailed changelog [CLICK HERE](https://gitlab.com/comfyhome/dist/ComfyGit/-/releases/v0.37.13)</sup>
+<sup>... ✨ auto-injected by [ComfyGit](https://github.com/comfy-home/ComfyGit)       |       For detailed changelog [CLICK HERE](https://gitlab.com/comfyhome/dist/ComfyGit/-/releases/v0.39.1)</sup>
 
 ---
 
 </details>
+
 
 
 
