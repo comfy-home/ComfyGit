@@ -2,6 +2,291 @@
 
 Newest archived changelogs first. When multiple archived files represent the same version, only the newest archive is included here.
 
+## Changelog `v0.39.1` <sup><div align="end">🗓️ 2026-11-02</div></sup>
+
+### 💥 💥 💥 This Release's Top Picks ...  💥 💥 💥
+
+#### **1. &nbsp;&nbsp;&nbsp;[0.39.0 - 0.39.7]: Finally, WORKTREE support!**
+- ComfyGit now can create worktrees, merge to main worktree, manage worktrees etc
+- Make sure to check `cg wt --help` to see all available commands
+- Two merging options:
+  - You can use `cg wt end ll`/`cg wt end local` to merge your worktree locally, and then push your changes to remote, or...
+  - You can use a plain `cg wt end`/`cg wt mg` to merge your changes via PR/MR request
+- EXPERIMENTAL feature in testing:
+  - CG can automatically adjust relative paths!
+  - Since the best practice is having WT one level higher that projects root, you usually need to adjust any relative path declerations (e.g. in Cargo.toml), CG should be able to do this for you.
+  - Of course when you use `cg wt end` to marge your branched WT back to main WT, CG returns relative paths as they should be!
+- IN TESTING!
+
+#### **2. &nbsp;&nbsp;&nbsp;[0.39.1]: ComfyGit now supports **finding branches** by name with query syntax**
+- Yesterday you needed this: `git branch -a | grep -i -E '(want-find-this|(^|[/_-])also-this([/_-]|$))'`, today you can use `cg br find "want-find-this|also-this"`
+- Use `cg br find <query>` to search for branches
+- Query syntax supports OR/AND/exclusion/exact matching
+- Examples:
+  - `cg br find "feature|bug"`
+  - `cg br find "feature|bug||huge|big"` = finds each branch containing "feature" OR "bug" AND "huge" OR "big"
+  - `cg br find "feature|bug||huge|big" !"enhancement"` = same as above but excludes branches containing "enhancement"
+  - `cg br find "feaTure" -e` = finds exact branch name "feaTure"
+
+#### **3. &nbsp;&nbsp;&nbsp;[0.38.8]: Multi-IDE support in `cg mg`/`cg merge`**
+- ComfyGit now supports merge conflict resolver opening in: VSCode(old), JetBrains, Cursor, and Devin
+
+#### **4. &nbsp;&nbsp;&nbsp;[0.38.9 and 0.38.10]: Recognition of custom version marking**
+- CG no longer errors out with versions like:
+  - 1.2.3-alpha.4
+  - 1.2.3-alpha.4:custom
+  - 1.2.3-alpha.4--custom
+- NOTE: Some languages don't allow use of `:custom` (e.g. Rust), but `--custom` is usually fine
+- NOTE 2: This version brings only recognition and ititial logic, not deep implementation
+  - example of logic: if you do a minor bump from path with alpha flag, this flag is removed automatically.
+  - deep implementation will follow (no timeline yet)
+
+#### **5. &nbsp;&nbsp;&nbsp;[0.38.11]: Fix for incorrect Remote resolution**
+- it happened especially during `cg br end` in cloned/forked project
+- solved
+
+#### **6. &nbsp;&nbsp;&nbsp;[0.38.12]: GitLab merging improvements**
+- needed for reliability as some `glab` commands were not reliable as they should
+
+#### **7. &nbsp;&nbsp;&nbsp;[0.38.15]: Support Sync for non-CG configured remotes**
+- Previously errored out when remote was unreachable (e.g. turned off VM), now flow finishes.
+- Not only that, it also offers the sync when unconfigured remote is reachable (defaults to skip; with 10s timeout)
+
+
+<sub>...  🎉 Enjoy!</sub>
+
+<br>
+
+### 🧩 Features
+
+* allow SUB branches to be created from any branch including custom-named ones <sub><sup><sup>_b2f1b04_</sup></sup></sub>
+
+* add shell wrapper support for `cg wt cd` command <sub><sup><sup>_34cb3c7_</sup></sup></sub>
+
+* add worktree command routing and project context resolution for linked worktrees <sub><sup><sup>_da9270c_</sup></sup></sub>
+
+* add worktree support to resolve_remote_spec_for_repo via git common dir fallback <sub><sup><sup>_9e85570_</sup></sup></sub>
+
+* add worktree module to git subsystem <sub><sup><sup>_3166a47_</sup></sup></sub>
+
+* implement git worktree management commands <sub><sup><sup>_24dc565_</sup></sup></sub>
+
+* preserve worktree_root when editing existing repository configuration <sub><sup><sup>_fb76e4a_</sup></sup></sub>
+
+* add worktree_root field to RepoConfig <sub><sup><sup>_984a4c8_</sup></sup></sub>
+
+* add worktree_paths module to git subsystem <sub><sup><sup>_4d67a43_</sup></sup></sub>
+
+* implement relative path adjustment for worktree config files <sub><sup><sup>_9c12772_</sup></sup></sub>
+
+* integrate worktree path adjustment into wt new and wt end commands <sub><sup><sup>_583bd8c_</sup></sup></sub>
+
+* expose prompt_target_branch_change function for worktree integration <sub><sup><sup>_79b8476_</sup></sup></sub>
+
+* add interactive merge target confirmation to wt end command <sub><sup><sup>_7611b48_</sup></sup></sub>
+
+* add detailed dirty status breakdown to worktree list and status commands <sub><sup><sup>_5569fea_</sup></sup></sub>
+
+* add dedicated help output for worktree commands <sub><sup><sup>_6384c47_</sup></sup></sub>
+
+* add `wt end local` command for local branch merging without PR/MR <sub><sup><sup>_dd92f39_</sup></sup></sub>
+
+* add remote-only PR/MR merge function for worktree workflows <sub><sup><sup>_c76b931_</sup></sup></sub>
+
+* add SemVer pre-release and build metadata support <sub><sup><sup>_1c8a467_</sup></sup></sub>
+
+* add custom suffix support to SemVer versioning <sub><sup><sup>_57fa119_</sup></sup></sub>
+
+* add `--` as alternative custom suffix delimiter in SemVer <sub><sup><sup>_c9ee746_</sup></sup></sub>
+
+* add colored error output and explicit exit code handling <sub><sup><sup>_f388cfd_</sup></sup></sub>
+
+* inject --repo flag in gh CLI calls to prevent wrong remote selection <sub><sup><sup>_f45db08_</sup></sup></sub>
+
+* add pre-flight commit check to prevent confusing GitHub API errors in PR creation <sub><sup><sup>_6d183c2_</sup></sup></sub>
+
+* increase mergeability pending max retries from 3 to 11 <sub><sup><sup>_0032cb7_</sup></sup></sub>
+
+* use GitLab REST API directly in fetch_mergeability to get reliable merge_status field <sub><sup><sup>_1a70659_</sup></sup></sub>
+
+* use GitLab REST API directly in list/view MR functions and force merge_ref recomputation in fetch_mergeability <sub><sup><sup>_f2a5626_</sup></sup></sub>
+
+* use GitLab REST API directly in merge/create/lookup MR functions to fix 401 errors with subgroup projects <sub><sup><sup>_a735d91_</sup></sup></sub>
+
+* fetch from all remotes before syncing local branch after PR/MR merge <sub><sup><sup>_04f11b9_</sup></sup></sub>
+
+* add progress messages and green success output to PR/MR merge functions <sub><sup><sup>_82b3523_</sup></sup></sub>
+
+* fetch from all remotes before syncing target branch in wt-end after remote merge <sub><sup><sup>_f16c1a9_</sup></sup></sub>
+
+* return empty string from merge_merge_request instead of API response JSON <sub><sup><sup>_1464441_</sup></sup></sub>
+
+* add blank lines after forge output and sync messages for better readability <sub><sup><sup>_c09c119_</sup></sup></sub>
+
+* add "Checking secondary remote..." message before mirror sync in merge and wt-end <sub><sup><sup>_56758d0_</sup></sup></sub>
+
+* include untracked files in auto-stash operations during branch merge <sub><sup><sup>_dfc9262_</sup></sup></sub>
+
+* support large GitLab release assets via Generic Packages API <sub><sup><sup>_57d4cbd_</sup></sup></sub>
+
+* add GitHub tag verification and release notes truncation to prevent 422 errors <sub><sup><sup>_f37e201_</sup></sup></sub>
+
+* allow cross-type deviation nesting (e.g. alt within SUB branches) <sub><sup><sup>_1f2a6a6_</sup></sup></sub>
+
+* fetch only configured remotes in post-merge sync to avoid failures from offline extra remotes <sub><sup><sup>_3c1f167_</sup></sup></sub>
+
+* add fetch_configured_remotes() and unconfigured_remotes() helpers to skip extra remotes during sync <sub><sup><sup>_58be559_</sup></sup></sub>
+
+* fetch only configured remotes in worktree merge to avoid failures from offline extra remotes <sub><sup><sup>_50a55ce_</sup></sup></sub>
+
+* add interactive prompt to sync unconfigured remotes with timeout and cancellation support <sub><sup><sup>_606e8f0_</sup></sup></sub>
+
+* fast-forward current branch to all fetched remotes before pull to handle cross-remote merges <sub><sup><sup>_e8f96ab_</sup></sup></sub>
+
+* add arrow key navigation to unconfigured remotes prompt with live selection highlighting <sub><sup><sup>_66998f5_</sup></sup></sub>
+
+* add `cg branch find` command for searching local and remote branch names with query syntax support <sub><sup><sup>_0ceb41b_</sup></sup></sub>
+
+* implement branch name search with query syntax supporting OR/AND/exclusion/exact matching <sub><sup><sup>_5e15361_</sup></sup></sub>
+
+* add branch_find module to git subsystem <sub><sup><sup>_95c5765_</sup></sup></sub>
+
+### 🐛 Fix(es)
+
+* check main worktree status before switching branches in wt end <sub><sup><sup>_43f9383_</sup></sup></sub>
+
+* use actual git main worktree root instead of configured project_root in wt end <sub><sup><sup>_3999f60_</sup></sup></sub>
+
+* resolve relative git-common-dir paths against repo cwd not process cwd, fixes incorrect branch resolution e.g. in `cg rrt` flow <sub><sup><sup>_017f999_</sup></sup></sub>
+
+* drain stdout/stderr in threads to prevent pipe deadlock in run_git_with_cancel <sub><sup><sup>_ff6510c_</sup></sup></sub>
+
+* encode forward slashes in GitLab project paths for API URLs <sub><sup><sup>_60e3a1a_</sup></sup></sub>
+
+* normalize path separators to forward slashes and deduplicate manifest detection on case-insensitive filesystems <sub><sup><sup>_608657a_</sup></sup></sub>
+
+* Win32 test errors solved <sub><sup><sup>_608657a_</sup></sup></sub>
+
+* allowing ALT from any SUB, previously only `main>dev>sub` was allowed, now accepts also `main>sub` <sub><sup><sup>_1f2a6a6_</sup></sup></sub>
+
+* pin CARGO_TARGET_DIR and redirect all log output to stderr to prevent pollution of captured function return values <sub><sup><sup>_70f3fa8_</sup></sup></sub>
+
+* continue pushing to all remotes even when one fails and return fetched remote names from fetch_configured_remotes() <sub><sup><sup>_75c21b6_</sup></sup></sub>
+
+* pass fetched remote names to sync_current_branch() in worktree merge flow to enable cross-remote fast-forward <sub><sup><sup>_fad2267_</sup></sup></sub>
+
+### 🔧 Maintenance
+
+* CG app version bump to v0.38.0 <sub><sup><sup>_6357ecc_</sup></sup></sub>
+
+* CG app version bump to v0.38.1 <sub><sup><sup>_1bb8422_</sup></sup></sub>
+
+* CG app version bump to v0.38.2 <sub><sup><sup>_4469728_</sup></sup></sub>
+
+* CG app version bump to v0.38.3 <sub><sup><sup>_cc39bc6_</sup></sup></sub>
+
+* CG app version bump to v0.38.4 <sub><sup><sup>_a56889d_</sup></sup></sub>
+
+* CG app version bump to v0.38.5 <sub><sup><sup>_ee91a97_</sup></sup></sub>
+
+* CG app version bump to v0.38.6 <sub><sup><sup>_3139a4e_</sup></sup></sub>
+
+* CG app version bump to v0.38.7 <sub><sup><sup>_a055326_</sup></sup></sub>
+
+* CG app version bump to v0.38.8 <sub><sup><sup>_41ac931_</sup></sup></sub>
+
+* CG app version bump to v0.38.9 <sub><sup><sup>_bae3f96_</sup></sup></sub>
+
+* CG app version bump to v0.38.10 <sub><sup><sup>_7a69034_</sup></sup></sub>
+
+* CG app version bump to v0.38.11 <sub><sup><sup>_c11e3e4_</sup></sup></sub>
+
+* CG app version bump to v0.38.12 <sub><sup><sup>_b1e1013_</sup></sup></sub>
+
+* CG app version bump to v0.38.13 <sub><sup><sup>_ec35b15_</sup></sup></sub>
+
+* CG app version bump to v0.38.14 <sub><sup><sup>_56c855f_</sup></sup></sub>
+
+* CG app version bump to v0.38.15 <sub><sup><sup>_2a87759_</sup></sup></sub>
+
+* CG app version bump to v0.39.0 <sub><sup><sup>_95b9ab4_</sup></sup></sub>
+
+* CG app version bump to v0.39.1 <sub><sup><sup>_131b3bc_</sup></sup></sub>
+
+### ℹ️ Documentation
+
+* add `cg branch find` command to README with query syntax examples <sub><sup><sup>_bb58fd0_</sup></sup></sub>
+
+### ♻️ Refactor
+
+* use forge-aware labels for remote URL prompts <sub><sup><sup>_aa3dd09_</sup></sup></sub>
+
+* use main worktree's checked out branch as merge target in wt end <sub><sup><sup>_7c89685_</sup></sup></sub>
+
+* make merge_in_progress and list_unmerged_files pub(crate) <sub><sup><sup>_4877474_</sup></sup></sub>
+
+* improve merge conflict error output in wt end <sub><sup><sup>_9653dc4_</sup></sup></sub>
+
+* handle worktree-checked-out branches in target branch list <sub><sup><sup>_8edf851_</sup></sup></sub>
+
+* split wt end into PR/MR and local merge variants <sub><sup><sup>_4fbf2d4_</sup></sup></sub>
+
+* generalize IDE support beyond VS Code for merge conflict resolution <sub><sup><sup>_2a4eb32_</sup></sup></sub>
+
+* improve IDE detection reliability <sub><sup><sup>_f2ec1f2_</sup></sup></sub>
+
+* replace hardcoded VS Code references with IDE detection in merge UI <sub><sup><sup>_a614a28_</sup></sup></sub>
+
+* allow Warning probes to provide format for scope saves <sub><sup><sup>_5a67e94_</sup></sup></sub>
+
+* allow Warning probes to provide format for project wizard saves <sub><sup><sup>_175f24a_</sup></sup></sub>
+
+* format long assertion chains in SemVer tests <sub><sup><sup>_09205d8_</sup></sup></sub>
+
+* strip version suffixes from tile displays and show in name <sub><sup><sup>_a6f64f5_</sup></sup></sub>
+
+### 📝 Other
+
+* Merge pull request #197 (via ComfyGit) <sub><sup><sup>_d54ac3c_</sup></sup></sub>
+
+* Merge pull request #198 (via ComfyGit) <sub><sup><sup>_6d05208_</sup></sup></sub>
+
+* Merge pull request #199 (via ComfyGit) <sub><sup><sup>_ae410a7_</sup></sup></sub>
+
+* Merge pull request #200 (via ComfyGit) <sub><sup><sup>_9aa4568_</sup></sup></sub>
+
+* Merge pull request #201 (via ComfyGit) <sub><sup><sup>_136a0b6_</sup></sup></sub>
+
+* Merge pull request #202 (via ComfyGit) <sub><sup><sup>_74935c0_</sup></sup></sub>
+
+* Merge pull request #203 (via ComfyGit) <sub><sup><sup>_1e9fd24_</sup></sup></sub>
+
+* Merge pull request #204 (via ComfyGit) <sub><sup><sup>_3ddf469_</sup></sup></sub>
+
+* Merge pull request #205 (via ComfyGit) <sub><sup><sup>_e76d443_</sup></sup></sub>
+
+* Merge pull request #206 (via ComfyGit) <sub><sup><sup>_fea54ae_</sup></sup></sub>
+
+* Merge pull request #207 (via ComfyGit) <sub><sup><sup>_b844708_</sup></sup></sub>
+
+* Merge pull request #208 (via ComfyGit) <sub><sup><sup>_ed70cc5_</sup></sup></sub>
+
+* Merge pull request #209 (via ComfyGit) <sub><sup><sup>_144a95d_</sup></sup></sub>
+
+* Merge pull request #210 (via ComfyGit) <sub><sup><sup>_64a4a99_</sup></sup></sub>
+
+* Merge pull request #211 (via ComfyGit) <sub><sup><sup>_bf9662c_</sup></sup></sub>
+
+* Merge pull request #212 (via ComfyGit) <sub><sup><sup>_7c9159d_</sup></sup></sub>
+
+* Merge pull request #213 (via ComfyGit) <sub><sup><sup>_45c1ceb_</sup></sup></sub>
+
+* Merge pull request #214 (via ComfyGit) <sub><sup><sup>_57ce445_</sup></sup></sub>
+
+* Merge pull request #215 (via ComfyGit) <sub><sup><sup>_b2203dd_</sup></sup></sub>
+
+---
+
 ## Changelog `v0.37.13` <sup><div align="end">🗓️ 2026-07-19</div></sup>
 
 ### 💥 💥 💥 This Release's Top Picks ...  💥 💥 💥
