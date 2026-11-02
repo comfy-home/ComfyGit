@@ -324,6 +324,13 @@ Enjoy!
 
 ---
 
+> [!NOTE]
+> - **ComfyGit** is not updated as often as we'd like at the moment due to another project that we've been working on for years and it's nearing the finish line.
+> - However, this does **not** mean that **ComfyGit** development has been terminated, there are great things coming...
+> - For now, we aim to push new features at least every 2-3 months.
+
+---
+
 > [!IMPORTANT]
 > <br>
 >
