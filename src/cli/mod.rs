@@ -3137,9 +3137,15 @@ struct BranchDiagramNode {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+struct BranchDiagramChild {
+    branch: BranchDiagramNode,
+    merged: Vec<BranchDiagramChild>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct BranchDiagramSegment {
     branch: BranchDiagramNode,
-    merged: Vec<BranchDiagramNode>,
+    merged: Vec<BranchDiagramChild>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -3265,9 +3271,12 @@ fn load_branch_diagram_with_cancel(
             .iter()
             .position(|merged| merged.contains(&branch_lookup))
         {
-            path[index].merged.push(BranchDiagramNode {
-                name: display_branch_name(&branch.name),
-                state: BranchDiagramState::Merged,
+            path[index].merged.push(BranchDiagramChild {
+                branch: BranchDiagramNode {
+                    name: display_branch_name(&branch.name),
+                    state: BranchDiagramState::Merged,
+                },
+                merged: Vec::new(),
             });
             continue;
         }
@@ -3278,17 +3287,21 @@ fn load_branch_diagram_with_cancel(
                 .position(|segment| segment.branch.name.eq_ignore_ascii_case(current_branch))
                 .map(|index| &mut path[index])
         {
-            segment.merged.push(BranchDiagramNode {
-                name: display_branch_name(&branch.name),
-                state: BranchDiagramState::Open,
+            segment.merged.push(BranchDiagramChild {
+                branch: BranchDiagramNode {
+                    name: display_branch_name(&branch.name),
+                    state: BranchDiagramState::Open,
+                },
+                merged: Vec::new(),
             });
         }
     }
 
     for segment in &mut path {
         segment.merged.sort_by(|left, right| {
-            normalize_lookup(&left.name).cmp(&normalize_lookup(&right.name))
+            normalize_lookup(&left.branch.name).cmp(&normalize_lookup(&right.branch.name))
         });
+        segment.merged = nest_branch_diagram_children(std::mem::take(&mut segment.merged));
     }
 
     Ok(Some(BranchDiagram {
@@ -3298,6 +3311,47 @@ fn load_branch_diagram_with_cancel(
         },
         path,
     }))
+}
+
+/// Groups flat merged-branch lists into a hierarchy using the deviation
+/// naming scheme (e.g. `x-SUB4-SUB1` nests under `x-SUB4--...`).  A branch
+/// nests under another entry in the same list only when its resolved merge
+/// parent is present there; anything else stays top-level.
+///
+/// The input must be sorted by name — parents always sort before their
+/// children because a deviation parent name is a strict prefix of the
+/// child base (`base--suffix` < `base-SUB1--suffix`).
+fn nest_branch_diagram_children(children: Vec<BranchDiagramChild>) -> Vec<BranchDiagramChild> {
+    let names = children
+        .iter()
+        .map(|child| child.branch.name.clone())
+        .collect::<Vec<_>>();
+
+    let mut roots: Vec<BranchDiagramChild> = Vec::with_capacity(children.len());
+    for child in children {
+        let parent = crate::git::deviation_merge_parent_branch(&child.branch.name, &names)
+            .filter(|parent| !parent.eq_ignore_ascii_case(&child.branch.name));
+        match parent.and_then(|parent| find_branch_child_mut(&mut roots, &parent)) {
+            Some(parent_child) => parent_child.merged.push(child),
+            None => roots.push(child),
+        }
+    }
+    roots
+}
+
+fn find_branch_child_mut<'a>(
+    children: &'a mut [BranchDiagramChild],
+    name: &str,
+) -> Option<&'a mut BranchDiagramChild> {
+    for child in children.iter_mut() {
+        if child.branch.name.eq_ignore_ascii_case(name) {
+            return Some(child);
+        }
+        if let Some(found) = find_branch_child_mut(&mut child.merged, name) {
+            return Some(found);
+        }
+    }
+    None
 }
 
 fn load_branch_lineage_with_cancel(
@@ -3687,14 +3741,21 @@ struct BranchDiagramSegmentLayout {
     anchor_column: usize,
     merge_column: Option<usize>,
     continuation_column: Option<usize>,
+    wrapped_continuation: bool,
 }
+
+const MIN_RIGHT_TAIL: usize = 17;
+const MIN_JUNCTION_GAP: usize = 12;
+/// Continuation anchors beyond this column wrap down to
+/// `WRAPPED_PATH_INDENT` instead of drifting further right, so deep chains
+/// stay readable without an extremely wide terminal.
+const MAX_PATH_ANCHOR_COLUMN: usize = 48;
+/// Indent used for a path segment whose continuation was wrapped.
+const WRAPPED_PATH_INDENT: usize = 8;
 
 fn compute_branch_diagram_layout(
     diagram: &BranchDiagram,
 ) -> (usize, Vec<BranchDiagramSegmentLayout>) {
-    const MIN_RIGHT_TAIL: usize = 17;
-    const MIN_JUNCTION_GAP: usize = 12;
-
     let root_start = plain_branch_label(&diagram.root).len() + 1;
     let mut arrow_column = root_start + MIN_RIGHT_TAIL;
     let mut layouts = Vec::with_capacity(diagram.path.len());
@@ -3705,19 +3766,17 @@ fn compute_branch_diagram_layout(
         let has_more_path = index + 1 < diagram.path.len();
         let has_merged = !segment.merged.is_empty();
         let merge_column = has_merged.then(|| {
-            let merged_start = segment
-                .merged
-                .iter()
-                .map(|merged| anchor_column + 6 + plain_branch_label(merged).len() + 1)
-                .max()
-                .unwrap_or(path_start);
-            path_start.max(merged_start) + MIN_JUNCTION_GAP
+            let merged_start =
+                path_start.max(merged_children_label_end(&segment.merged, anchor_column, 1));
+            merged_start + MIN_JUNCTION_GAP
         });
         let continuation_column = if has_more_path {
             Some(merge_column.unwrap_or(path_start + MIN_JUNCTION_GAP) + usize::from(has_merged))
         } else {
             None
         };
+        let wrapped_continuation =
+            continuation_column.is_some_and(|column| column > MAX_PATH_ANCHOR_COLUMN);
 
         let line_arrow_column = continuation_column
             .map(|column| column + MIN_RIGHT_TAIL + 1)
@@ -3728,14 +3787,41 @@ fn compute_branch_diagram_layout(
             anchor_column,
             merge_column,
             continuation_column,
+            wrapped_continuation,
         });
 
         if let Some(next_anchor_column) = continuation_column {
-            anchor_column = next_anchor_column;
+            anchor_column = if wrapped_continuation {
+                WRAPPED_PATH_INDENT
+            } else {
+                next_anchor_column
+            };
         }
     }
 
     (arrow_column, layouts)
+}
+
+/// Rightmost label end (exclusive) among merged children at any depth.
+/// A child at `depth` is indented `anchor + 3 * depth` columns.
+fn merged_children_label_end(
+    children: &[BranchDiagramChild],
+    anchor_column: usize,
+    depth: usize,
+) -> usize {
+    children
+        .iter()
+        .map(|child| {
+            let label_end =
+                anchor_column + 3 * depth + 3 + plain_branch_label(&child.branch).len() + 1;
+            label_end.max(merged_children_label_end(
+                &child.merged,
+                anchor_column,
+                depth + 1,
+            ))
+        })
+        .max()
+        .unwrap_or(0)
 }
 
 fn render_branch_segments(
@@ -3793,18 +3879,24 @@ fn render_branch_segments(
             }
         }
 
-        for (merged_index, merged) in segment.merged.iter().enumerate() {
-            let merged_prefix = format!("{}   ", path_prefix);
-            let merged_start = layout.anchor_column + 6 + plain_branch_label(merged).len() + 1;
+        let merged_rows = collect_merged_rows(&segment.merged);
+        let merged_row_count = merged_rows.len();
+        for (row_index, row) in merged_rows.iter().enumerate() {
+            let mut merged_prefix = " ".repeat(layout.anchor_column + 3);
+            for continues in &row.ancestor_continues {
+                merged_prefix.push_str(if *continues { "│  " } else { "   " });
+            }
+            let merged_start =
+                layout.anchor_column + 3 * row.depth + 3 + plain_branch_label(row.branch).len() + 1;
             let merge_column = layout
                 .merge_column
                 .expect("merged segments require a merge column");
-            let starter = if merged_index + 1 == segment.merged.len() {
+            let starter = if row.last_sibling {
                 "└─ "
             } else {
                 "├─ "
             };
-            let close = if merged_index + 1 == segment.merged.len() {
+            let close = if row_index + 1 == merged_row_count {
                 '┘'
             } else {
                 '┤'
@@ -3815,7 +3907,7 @@ fn render_branch_segments(
                     "{}{}{} {}{}│",
                     merged_prefix,
                     starter,
-                    format_branch_label(merged),
+                    format_branch_label(row.branch),
                     branch_diagram_fill(merged_start, merge_column),
                     close
                 ));
@@ -3824,13 +3916,60 @@ fn render_branch_segments(
                     "{}{}{} {}{}",
                     merged_prefix,
                     starter,
-                    format_branch_label(merged),
+                    format_branch_label(row.branch),
                     branch_diagram_fill(merged_start, merge_column),
                     close
                 ));
             }
         }
+
+        if layout.wrapped_continuation
+            && let Some(continuation_column) = layout.continuation_column
+        {
+            lines.push(format!("{}│", " ".repeat(continuation_column)));
+            lines.push(format!(
+                "{}┌{}┘",
+                " ".repeat(WRAPPED_PATH_INDENT),
+                branch_diagram_fill(WRAPPED_PATH_INDENT + 1, continuation_column)
+            ));
+        }
     }
+}
+
+struct MergedRow<'a> {
+    branch: &'a BranchDiagramNode,
+    depth: usize,
+    last_sibling: bool,
+    /// Whether each ancestor (depths 1..depth) has more siblings after it,
+    /// so the row prefix can draw a `│` rail in those ancestor cells.
+    ancestor_continues: Vec<bool>,
+}
+
+fn collect_merged_rows(children: &[BranchDiagramChild]) -> Vec<MergedRow<'_>> {
+    fn visit<'a>(
+        children: &'a [BranchDiagramChild],
+        depth: usize,
+        ancestor_continues: &[bool],
+        rows: &mut Vec<MergedRow<'a>>,
+    ) {
+        let last_index = children.len().saturating_sub(1);
+        for (index, child) in children.iter().enumerate() {
+            let continues = index != last_index;
+            rows.push(MergedRow {
+                branch: &child.branch,
+                depth,
+                last_sibling: !continues,
+                ancestor_continues: ancestor_continues.to_vec(),
+            });
+            let mut child_continues = ancestor_continues.to_vec();
+            child_continues.push(continues);
+            visit(&child.merged, depth + 1, &child_continues, rows);
+        }
+    }
+
+    let mut rows = Vec::new();
+    visit(children, 1, &[], &mut rows);
+    rows
 }
 
 fn render_aligned_arrow_line(
@@ -5479,10 +5618,7 @@ mod tests {
                         name: "feature/base".to_string(),
                         state: BranchDiagramState::Open,
                     },
-                    merged: vec![BranchDiagramNode {
-                        name: "release/0.10".to_string(),
-                        state: BranchDiagramState::Merged,
-                    }],
+                    merged: vec![merged_child("release/0.10")],
                 },
                 BranchDiagramSegment {
                     branch: BranchDiagramNode {
@@ -5531,10 +5667,7 @@ mod tests {
                         name: "0.10.8+".to_string(),
                         state: BranchDiagramState::Open,
                     },
-                    merged: vec![BranchDiagramNode {
-                        name: "0.10.9".to_string(),
-                        state: BranchDiagramState::Merged,
-                    }],
+                    merged: vec![merged_child("0.10.9")],
                 },
                 BranchDiagramSegment {
                     branch: BranchDiagramNode {
@@ -5578,10 +5711,7 @@ mod tests {
                         name: "0.10.8+".to_string(),
                         state: BranchDiagramState::Open,
                     },
-                    merged: vec![BranchDiagramNode {
-                        name: "0.10.9".to_string(),
-                        state: BranchDiagramState::Merged,
-                    }],
+                    merged: vec![merged_child("0.10.9")],
                 },
                 BranchDiagramSegment {
                     branch: BranchDiagramNode {
@@ -5606,9 +5736,164 @@ mod tests {
     }
 
     #[test]
+    fn render_branch_tree_wraps_far_path_continuation() {
+        let tree = render_branch_tree(Some(&BranchDiagram {
+            root: BranchDiagramNode {
+                name: "main".to_string(),
+                state: BranchDiagramState::Main,
+            },
+            path: vec![
+                BranchDiagramSegment {
+                    branch: BranchDiagramNode {
+                        name: "0.101.x--ComfyCookie".to_string(),
+                        state: BranchDiagramState::Open,
+                    },
+                    merged: vec![
+                        merged_child("0.101.x-SUB1--ComfyCookie-xx-Initial-Implementation"),
+                        merged_child("0.101.x-SUB2--ComfyCookie-xx-Cookie-chip-in-URL-Bar"),
+                        merged_child("0.101.x-SUB3--ComfyCookie-xx-Audit-and-Fixes"),
+                    ],
+                },
+                BranchDiagramSegment {
+                    branch: BranchDiagramNode {
+                        name: "0.101.x-SUB4--ComfyCookie-xx-Runtime-fixes-xx-Real-life-tests"
+                            .to_string(),
+                        state: BranchDiagramState::Current,
+                    },
+                    merged: Vec::new(),
+                },
+            ],
+        }));
+
+        assert_eq!(
+            strip_ansi_for_test(&tree),
+            [
+                "main ─────────────────────────────────────────────────────────────────────────────────────>",
+                "└─ 0.101.x--ComfyCookie ──────────────────────────────────────────────┬┬──────────────────>",
+                "   ├─ 0.101.x-SUB1--ComfyCookie-xx-Initial-Implementation ────────────┤│",
+                "   ├─ 0.101.x-SUB2--ComfyCookie-xx-Cookie-chip-in-URL-Bar ────────────┤│",
+                "   └─ 0.101.x-SUB3--ComfyCookie-xx-Audit-and-Fixes ───────────────────┘│",
+                "                                                                       │",
+                "        ┌──────────────────────────────────────────────────────────────┘",
+                "        └─ 0.101.x-SUB4--ComfyCookie-xx-Runtime-fixes-xx-Real-life-tests ─────────────────>",
+            ]
+            .join("\n")
+        );
+    }
+
+    #[test]
+    fn render_branch_tree_nests_merged_descendants() {
+        let tree = render_branch_tree(Some(&BranchDiagram {
+            root: BranchDiagramNode {
+                name: "main".to_string(),
+                state: BranchDiagramState::Main,
+            },
+            path: vec![BranchDiagramSegment {
+                branch: BranchDiagramNode {
+                    name: "0.101.x--ComfyCookie".to_string(),
+                    state: BranchDiagramState::Current,
+                },
+                merged: vec![
+                    BranchDiagramChild {
+                        branch: BranchDiagramNode {
+                            name: "0.101.x-SUB1--ComfyCookie-xx-Initial-Implementation".to_string(),
+                            state: BranchDiagramState::Merged,
+                        },
+                        merged: vec![merged_child(
+                            "0.101.x-SUB1-SUB1--ComfyCookie-xx-Parent-close-confirmation-modal",
+                        )],
+                    },
+                    BranchDiagramChild {
+                        branch: BranchDiagramNode {
+                            name: "0.101.x-SUB4--ComfyCookie-xx-Runtime-fixes".to_string(),
+                            state: BranchDiagramState::Merged,
+                        },
+                        merged: vec![
+                            merged_child("0.101.x-SUB4-SUB1--Royal-mail"),
+                            merged_child("0.101.x-SUB4-SUB9--consentmanagerNet"),
+                        ],
+                    },
+                ],
+            }],
+        }));
+
+        let lines = strip_ansi_for_test(&tree)
+            .lines()
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>();
+
+        // A parent merged branch keeps the rail open (┤) for its children;
+        // the last emitted merged line closes the whole block (┘).
+        // Nested rows draw a │ rail in each ancestor cell whose ancestor
+        // has more siblings following.
+        assert_eq!(
+            lines[2],
+            "   ├─ 0.101.x-SUB1--ComfyCookie-xx-Initial-Implementation ─────────────────────────────┤"
+        );
+        assert_eq!(
+            lines[3],
+            "   │  └─ 0.101.x-SUB1-SUB1--ComfyCookie-xx-Parent-close-confirmation-modal ────────────┤"
+        );
+        assert_eq!(
+            lines[4],
+            "   └─ 0.101.x-SUB4--ComfyCookie-xx-Runtime-fixes ──────────────────────────────────────┤"
+        );
+        assert_eq!(
+            lines[5],
+            "      ├─ 0.101.x-SUB4-SUB1--Royal-mail ────────────────────────────────────────────────┤"
+        );
+        assert_eq!(
+            lines[6],
+            "      └─ 0.101.x-SUB4-SUB9--consentmanagerNet ─────────────────────────────────────────┘"
+        );
+    }
+
+    #[test]
+    fn nest_branch_diagram_children_groups_by_deviation_parent() {
+        let nested = nest_branch_diagram_children(vec![
+            merged_child("0.101.x-SUB1--ComfyCookie-xx-Initial-Implementation"),
+            merged_child("0.101.x-SUB4--ComfyCookie-xx-Runtime-fixes"),
+            merged_child("0.101.x-SUB4-SUB1--Royal-mail"),
+            merged_child("0.101.x-SUB4-SUB9--consentmanagerNet"),
+        ]);
+
+        assert_eq!(nested.len(), 2);
+        assert_eq!(
+            nested[0].branch.name,
+            "0.101.x-SUB1--ComfyCookie-xx-Initial-Implementation"
+        );
+        assert!(nested[0].merged.is_empty());
+        assert_eq!(
+            nested[1].branch.name,
+            "0.101.x-SUB4--ComfyCookie-xx-Runtime-fixes"
+        );
+        assert_eq!(
+            nested[1]
+                .merged
+                .iter()
+                .map(|child| child.branch.name.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "0.101.x-SUB4-SUB1--Royal-mail",
+                "0.101.x-SUB4-SUB9--consentmanagerNet"
+            ]
+        );
+    }
+
+    #[test]
     fn display_branch_name_omits_heads_prefix() {
         assert_eq!(display_branch_name("heads/0.10.9"), "0.10.9");
         assert_eq!(display_branch_name("release/1.0.0"), "release/1.0.0");
+    }
+
+    fn merged_child(name: &str) -> BranchDiagramChild {
+        BranchDiagramChild {
+            branch: BranchDiagramNode {
+                name: name.to_string(),
+                state: BranchDiagramState::Merged,
+            },
+            merged: Vec::new(),
+        }
     }
 
     fn strip_ansi_for_test(text: &str) -> String {
