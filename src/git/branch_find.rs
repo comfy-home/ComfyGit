@@ -68,7 +68,7 @@ fn parse_branch_find_args(args: &[String]) -> Result<BranchFindArgs> {
     if words.is_empty() {
         bail!(
             "missing search phrase — usage: cg br find [ll] '<phrases>' [!'<exclude>'] [-e]\n\
-             'a|b' = either phrase, 'a||b' = both phrases, !'x' = exclude, -e = literal match"
+             'a|b' = either phrase, 'a||b' or 'a&&b' = both phrases, !'x' = exclude, -e = literal match"
         );
     }
 
@@ -80,13 +80,15 @@ fn parse_branch_find_args(args: &[String]) -> Result<BranchFindArgs> {
     })
 }
 
-/// Parse a `|`/`||` expression into AND-groups of OR-alternative phrases.
+/// Parse a `|`/`||`/`&&` expression into AND-groups of OR-alternative phrases.
 ///
 /// `a|b||c|d` → `[[a, b], [c, d]]` — every group must have at least one
-/// matching alternative. Empty phrases and empty groups are dropped.
+/// matching alternative. `&&` is a synonym for the `||` AND separator.
+/// Empty phrases and empty groups are dropped.
 /// Unless `exact`, each phrase is normalized (trimmed, whitespace runs → `-`).
 fn parse_find_expression(raw: &str, exact: bool) -> Vec<Vec<String>> {
     raw.split("||")
+        .flat_map(|segment| segment.split("&&"))
         .map(|group| {
             group
                 .split('|')
@@ -278,6 +280,28 @@ mod tests {
             vec![
                 vec!["a".to_string(), "b".to_string()],
                 vec!["c".to_string(), "d".to_string()]
+            ]
+        );
+    }
+
+    #[test]
+    fn expression_treats_double_ampersand_as_and_separator() {
+        let expression = parse_find_expression("a|b&&c|d", false);
+        assert_eq!(
+            expression,
+            vec![
+                vec!["a".to_string(), "b".to_string()],
+                vec!["c".to_string(), "d".to_string()]
+            ]
+        );
+
+        let mixed = parse_find_expression("a||b&&c", false);
+        assert_eq!(
+            mixed,
+            vec![
+                vec!["a".to_string()],
+                vec!["b".to_string()],
+                vec!["c".to_string()]
             ]
         );
     }

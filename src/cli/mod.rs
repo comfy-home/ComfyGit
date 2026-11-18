@@ -1010,7 +1010,7 @@ fn print_usage() {
     );
     println!("  cg branch cd               Interactively choose and switch to a recent branch");
     println!("  cg branch find <query>     Search local and remote branch names");
-    println!("                             'a|b' = OR, 'a||b' = AND groups, !'x' = exclude,");
+    println!("                             'a|b' = OR, 'a||b' or 'a&&b' = AND groups, !'x' = exclude,");
     println!("                             ll = local only (before query), -e = literal match");
     println!(
         "  cg pr                      Generate a pull request title/body for the current branch"
